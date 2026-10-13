@@ -1,0 +1,22 @@
+// The PUBLISH build. The repo runs the .ts sources directly (Node ≥ 22.6 type
+// stripping), but Node refuses to strip types inside node_modules — so a package
+// whose `bin` points at TypeScript cannot run for a customer who installed it.
+// That is why the documented `npx -y @codetelemetry/mcp` install could never
+// serve the registry it was tested against.
+//
+// The standalone repository keeps every runtime module under src/. TypeScript
+// follows only that public source boundary and emits a self-contained dist/src
+// tree whose only third-party runtime dependency is the MCP SDK.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "sourceMap": false,
+    "removeComments": true,
+    "rootDir": ".",
+    "outDir": "dist",
+    "rewriteRelativeImportExtensions": true
+  },
+  "include": ["src"]
+}

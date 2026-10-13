@@ -1,0 +1,54 @@
+{
+  "name": "@codetelemetry/mcp",
+  "version": "0.3.9",
+  "description": "CodeTelemetry MCP server — lets a coding agent onboard a user end to end: authenticate (device code), obtain an ingest key, write the Claude Code OTEL config, send a test event, and confirm telemetry landed — then search, read, interpret and compare the user's own coding sessions, plan the next one, and size tasks, plans and Linear issues from that history. The plaintext key never enters the model's context.",
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://codetelemetry.com/docs/onboarding/mcp-server",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CodeTelemetry/codetelemetry-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/CodeTelemetry/codetelemetry-mcp/issues"
+  },
+  "bin": {
+    "codetelemetry-mcp": "./dist/src/server.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "tool-manifest.json"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "node scripts/cleanDist.ts && tsc -p tsconfig.build.json",
+    "test": "node --import ./test/support/isolateHome.ts --test test/tools.test.ts test/cost.test.ts test/performance.test.ts test/taskSize.test.ts test/estimatePlan.test.ts test/estimateLinearIssue.test.ts test/manifest.test.ts test/clientEdgeCases.test.ts",
+    "test:protocol": "node --import ./test/support/isolateHome.ts --test test/protocol.smoke.ts",
+    "test:packaged": "node --test test/packaged.smoke.ts",
+    "manifest:write": "node scripts/writeManifest.ts",
+    "verify:registry": "node scripts/verifyRegistry.ts",
+    "audit:package": "node scripts/auditPackage.ts",
+    "verify:publish-order": "node scripts/checkPublishOrder.ts",
+    "smoke": "node scripts/mcpSmoke.ts",
+    "typecheck": "tsc --noEmit",
+    "prepack": "npm run build && node scripts/verifyRegistry.ts --source"
+  },
+  "engines": {
+    "node": ">=22.6"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.9.3"
+  }
+}

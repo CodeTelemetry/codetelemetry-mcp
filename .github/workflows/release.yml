@@ -1,0 +1,182 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish to npm after every verification and production smoke passes
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-release
+  cancel-in-progress: false
+
+env:
+  PACKAGE_NAME: "@codetelemetry/mcp"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      tarball: ${{ steps.pack.outputs.name }}
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm audit --omit=dev
+      - run: npm test
+      - run: npm run test:protocol
+      - run: npm run typecheck
+      - name: Resolve version
+        id: version
+        run: node -p '"value=" + require("./package.json").version' >> "$GITHUB_OUTPUT"
+      - name: Refuse a downgrade or duplicate release
+        if: inputs.publish
+        run: |
+          set -euo pipefail
+          if npm view "${PACKAGE_NAME}@${{ steps.version.outputs.value }}" version >/dev/null 2>&1; then
+            echo "::error::${PACKAGE_NAME}@${{ steps.version.outputs.value }} is already published; bump the version first."
+            exit 1
+          fi
+          npm run verify:publish-order
+      - name: Build one release candidate
+        id: pack
+        run: |
+          set -euo pipefail
+          npm pack --silent --pack-destination "$RUNNER_TEMP" >/dev/null
+          TARBALL=$(find "$RUNNER_TEMP" -maxdepth 1 -name '*.tgz' -print -quit)
+          test -n "$TARBALL"
+          echo "name=$(basename "$TARBALL")" >> "$GITHUB_OUTPUT"
+      - name: Enforce the public package boundary
+        run: npm run audit:package -- "$RUNNER_TEMP/${{ steps.pack.outputs.name }}"
+      - name: Verify source and packaged registries
+        run: npm run verify:registry -- --packaged --tarball="$RUNNER_TEMP/${{ steps.pack.outputs.name }}"
+      - name: Install as a customer and check production discovery
+        run: npm run smoke -- --tarball "$RUNNER_TEMP/${{ steps.pack.outputs.name }}" --install --endpoint https://codetelemetry.com
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-release-candidate
+          path: ${{ runner.temp }}/${{ steps.pack.outputs.name }}
+          if-no-files-found: error
+          retention-days: 7
+
+  production-sanity:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-release-candidate
+          path: ${{ runner.temp }}
+      - name: Require the least-privilege smoke credential
+        env:
+          SMOKE_KEY: ${{ secrets.CODETELEMETRY_SMOKE_INGEST_KEY }}
+        run: |
+          if [ -z "${SMOKE_KEY:-}" ]; then
+            echo "::error::Add CODETELEMETRY_SMOKE_INGEST_KEY to this repository before running the release sanity check."
+            exit 1
+          fi
+      - name: Exercise every release-critical route against production
+        env:
+          CODETELEMETRY_INGEST_KEY: ${{ secrets.CODETELEMETRY_SMOKE_INGEST_KEY }}
+          CODETELEMETRY_SMOKE_ISSUE: ${{ vars.CODETELEMETRY_SMOKE_ISSUE }}
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3; do
+            if npm run smoke -- --tarball "$RUNNER_TEMP/${{ needs.verify.outputs.tarball }}" --require-auth --endpoint https://codetelemetry.com; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "::notice::production sanity attempt ${attempt} failed; retrying in 30 seconds"
+              sleep 30
+            fi
+          done
+          echo "::error::The verified package did not pass the authenticated production sanity check. Nothing was published."
+          exit 1
+
+  publish:
+    needs: [verify, production-sanity]
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    environment: npm-production
+    permissions:
+      contents: read
+      # npm trusted publishing: npm exchanges this job's GitHub OIDC token for a
+      # short-lived token that can publish only this package. No npm token is
+      # stored anywhere.
+      id-token: write
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-release-candidate
+          path: ${{ runner.temp }}
+      - name: Require an npm CLI that can publish with trusted publishing
+        run: |
+          set -euo pipefail
+          version=$(npm --version)
+          if [ "$(printf '%s\n' 11.5.1 "$version" | sort -V | head -n 1)" != "11.5.1" ]; then
+            echo "::error::npm ${version} cannot use trusted publishing; it needs 11.5.1 or later."
+            exit 1
+          fi
+      - name: Publish the verified artifact
+        # npmjs.com trusts exactly this workflow (release.yml) in the npm-production
+        # environment of this repository. npm adds provenance by itself once the
+        # repository is public, and skips it while the repository is private.
+        run: npm publish --access public --ignore-scripts "$RUNNER_TEMP/${{ needs.verify.outputs.tarball }}"
+
+  confirm:
+    needs: [verify, production-sanity, publish]
+    if: inputs.publish && success()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-release-candidate
+          path: ${{ runner.temp }}
+      - name: Verify npm serves the exact artifact as latest
+        run: |
+          set -uo pipefail
+          for attempt in {1..12}; do
+            if npm run verify:registry -- --published=${{ needs.verify.outputs.version }} --tarball="$RUNNER_TEMP/${{ needs.verify.outputs.tarball }}"; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 12 ]; then
+              echo "::notice::npm registry metadata has not converged after attempt ${attempt}; retrying in 30 seconds"
+              sleep 30
+            fi
+          done
+          echo "::error::npm did not serve the verified artifact as latest within the five-minute confirmation window."
+          exit 1
+      - name: Verify the literal customer launch path
+        env:
+          # A customer's npx starts without this job's restored npm cache. When a
+          # release changes the lockfile, that cache is the one `verify` saved, and it
+          # holds the version list the duplicate-release check fetched just before
+          # publishing. npm trusts that list for five minutes, so npx would refuse
+          # the new version (0.3.8's confirm failed this way twice).
+          npm_config_cache: ${{ runner.temp }}/customer-npm-cache
+        run: npm run smoke -- --npx=${PACKAGE_NAME}@${{ needs.verify.outputs.version }} --endpoint https://codetelemetry.com

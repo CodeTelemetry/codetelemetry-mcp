@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm audit --omit=dev
+      - run: npm test
+      - run: npm run test:protocol
+      - run: npm run typecheck
+      - name: Build one release candidate
+        id: pack
+        run: |
+          set -euo pipefail
+          npm pack --silent --pack-destination "$RUNNER_TEMP" >/dev/null
+          TARBALL=$(find "$RUNNER_TEMP" -maxdepth 1 -name '*.tgz' -print -quit)
+          test -n "$TARBALL"
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+      - name: Enforce the public package boundary
+        run: npm run audit:package -- "${{ steps.pack.outputs.tarball }}"
+      - name: Verify source and packaged registries
+        run: npm run verify:registry -- --packaged --tarball="${{ steps.pack.outputs.tarball }}"
+      - name: Install as a customer and check production discovery
+        run: npm run smoke -- --tarball "${{ steps.pack.outputs.tarball }}" --install --endpoint https://codetelemetry.com
