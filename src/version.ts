@@ -7,4 +7,4 @@
 // fails the build if they drift, because the version is what a customer pins in
 // `.mcp.json` and what the release automation compares against npm.
 export const MCP_SERVER_NAME = "codetelemetry";
-export const MCP_SERVER_VERSION = "0.3.9";
+export const MCP_SERVER_VERSION = "0.3.10";
