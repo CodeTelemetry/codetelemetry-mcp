@@ -3,9 +3,9 @@
 // fire a probe, confirm it landed. The returned result is MODEL-SAFE: it carries
 // only a masked key + hash, never the plaintext.
 
-import { resolveEndpoints, resolveSettingsPath, type SettingsScope } from "./config.ts";
-import { writeSettings, type WriteResult } from "./settings.ts";
-import { resolveCodexConfigPath, writeCodexConfig } from "./codexConfig.ts";
+import { resolveEndpoints, type SettingsScope } from "./config.ts";
+import { type WriteResult } from "./settings.ts";
+import { PI_EXTENSION_HINT, resolveClient } from "./clients.ts";
 import { sendTestEvent, type SendTestResult, type FetchLike } from "./otlp.ts";
 import {
   confirmLanded,
@@ -15,6 +15,8 @@ import {
   type KeyScope,
 } from "./connectivity.ts";
 import { keyHash, mask, assertKey } from "./keys.ts";
+import { enableKiroService, type KiroServiceOptions } from "./kiro/service.ts";
+import type { OnboardClient } from "./assistants.ts";
 
 export type OnboardStep = { name: string; ok: boolean; detail: string };
 
@@ -27,7 +29,7 @@ export type OnboardResult = {
   steps: OnboardStep[];
 };
 
-export type OnboardClient = "claude" | "codex";
+export type { OnboardClient };
 
 export type OnboardOptions = {
   /** A pasted key (fast path). */
@@ -37,20 +39,16 @@ export type OnboardOptions = {
   /** Which client's local config to write (default "claude"). */
   client?: OnboardClient;
   endpoints?: Partial<{ apiBase: string; ingestEndpoint: string }>;
-  settings?: {
-    scope?: SettingsScope;
-    /** Programmatic/test override. The public MCP tools do not accept arbitrary paths. */
-    path?: string;
-    enrich?: boolean;
-    repositoryObservation?: boolean;
-    backup?: boolean;
-  };
+  settings?: { scope?: SettingsScope; path?: string; enrich?: boolean; repositoryObservation?: boolean; backup?: boolean };
   sendTest?: boolean;
   verify?: boolean;
   verifyTimeoutMs?: number;
   verifyIntervalMs?: number;
   expectedScope?: ExpectedKeyScope;
   fetchImpl?: FetchLike;
+  /** Kiro service activation; false configures a deliberate foreground-only source. */
+  activateCollector?: boolean;
+  kiroService?: KiroServiceOptions;
   /** Receives human-facing, already-masked progress lines. */
   logger?: (msg: string) => void;
 };
@@ -58,6 +56,8 @@ export type OnboardOptions = {
 export async function onboard(opts: OnboardOptions): Promise<OnboardResult> {
   const log = opts.logger ?? (() => {});
   const steps: OnboardStep[] = [];
+  const client = resolveClient(opts.client);
+  if (client.id === "kiro" && opts.settings?.scope === "project") throw new Error("Kiro V3 capture is per-user; project scope is unsupported. Use a separate CodeTelemetry collector config.");
 
   // 1. Acquire the key (paste or device flow). Plaintext stays in this function.
   let apiKey: string;
@@ -107,34 +107,38 @@ export async function onboard(opts: OnboardOptions): Promise<OnboardResult> {
     }
   }
 
-  // 2. Write the local client config — Claude Code's settings.json env block, or
-  // Codex's ~/.codex/config.toml [otel] section. (`--scope project` is a Claude
-  // concept; for Codex an explicit `path` is the only override.)
-  const settings =
-    opts.client === "codex"
-      ? writeCodexConfig({
-          key: apiKey,
-          ingestEndpoint: endpoints.ingestEndpoint,
-          configPath: resolveCodexConfigPath({ path: opts.settings?.path }),
-          enrich: opts.settings?.enrich,
-          repositoryObservation: opts.settings?.repositoryObservation,
-          backup: opts.settings?.backup,
-        })
-      : writeSettings({
-          key: apiKey,
-          ingestEndpoint: endpoints.ingestEndpoint,
-          settingsPath: resolveSettingsPath({ scope: opts.settings?.scope, path: opts.settings?.path }),
-          enrich: opts.settings?.enrich,
-          repositoryObservation: opts.settings?.repositoryObservation,
-          backup: opts.settings?.backup,
-        });
-  const varsNoun = opts.client === "codex" ? "OTEL keys" : "OTEL vars";
+  // 2. Write the local client config: Claude Code's settings.json env block,
+  // Codex's ~/.codex/config.toml [otel] section, or pi's settings.json otel
+  // block. The client descriptors (clients.ts) own paths and writers.
+  const settings = client.write({
+    key: apiKey,
+    ingestEndpoint: endpoints.ingestEndpoint,
+    configPath: client.resolveConfigPath({ scope: opts.settings?.scope, path: opts.settings?.path }),
+    enrich: opts.settings?.enrich,
+    repositoryObservation: opts.settings?.repositoryObservation,
+    backup: opts.settings?.backup,
+  });
   steps.push({
     name: "write_config",
     ok: true,
-    detail: `${settings.created ? "created" : "updated"} ${settings.path} (${settings.wrote.length} ${varsNoun})`,
+    detail: `${settings.created ? "created" : "updated"} ${settings.path} (${settings.wrote.length} ${client.noun})`,
   });
-  log(`Wrote ${settings.wrote.length} ${varsNoun} to ${settings.path}${settings.backupPath ? ` (backup: ${settings.backupPath})` : ""}`);
+  log(`Wrote ${settings.wrote.length} ${client.noun} to ${settings.path}${settings.backupPath ? ` (backup: ${settings.backupPath})` : ""}`);
+
+  // 2b. pi exports through its pi-otel extension, not a built-in exporter.
+  // Check for it but never fail over it: config first is a valid order, and the
+  // test event and verify steps prove the pipe without pi.
+  if (client.id === "pi") {
+    const installed = client.readSummary(settings.path).extensionInstalled === true;
+    const detail = installed ? "pi-otel extension detected" : `pi-otel extension not detected: ${PI_EXTENSION_HINT}`;
+    steps.push({ name: "check_extension", ok: true, detail });
+    log(detail);
+  }
+
+  if (client.id === "kiro" && opts.activateCollector !== false) {
+    const service = await enableKiroService(settings.path, opts.kiroService);
+    steps.push({name:"activate_collector",ok:service.ok,detail:service.detail}); log(service.detail);
+  }
 
   // 3. Fire a test event.
   let test: SendTestResult | null = null;

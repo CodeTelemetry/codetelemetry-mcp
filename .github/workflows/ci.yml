@@ -32,6 +32,8 @@ jobs:
           echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
       - name: Enforce the public package boundary
         run: npm run audit:package -- "${{ steps.pack.outputs.tarball }}"
+      - name: Verify installed Connect and owned Kiro runtime
+        run: CODETELEMETRY_TEST_TARBALL="${{ steps.pack.outputs.tarball }}" npm run test:client-packaged
       - name: Verify source and packaged registries
         run: npm run verify:registry -- --packaged --tarball="${{ steps.pack.outputs.tarball }}"
       - name: Install as a customer and check production discovery

@@ -1,6 +1,6 @@
 # Publication boundary
 
-This repository is the public source for `@codetelemetry/mcp`. It starts from
+This repository is the authoritative public source for the MCP and Connect clients. It starts from
 a single allowlisted snapshot of the package, with no history from any other
 repository.
 
@@ -8,8 +8,8 @@ The npm artifact is allowlisted independently of the repository. It may contain
 only:
 
 - compiled MCP transport and tool-registry modules;
-- the minimal local onboarding/configuration helpers those tools call;
-- the read-only CodeTelemetry HTTP client and plan input normalizer;
+- local onboarding/configuration, privacy controls, history import and bounded Kiro collection;
+- CodeTelemetry HTTP clients, protocol contracts and plan input normalization;
 - `package.json`, `README.md`, `LICENSE`, and `tool-manifest.json`.
 
 It must not contain tests, TypeScript sources, release scripts, fixtures,
@@ -34,3 +34,21 @@ workflow.
 6. Review that run and the uploaded tarball, then run the same workflow with
    `publish=true`. Publication remains manual and uses the already-audited
    artifact.
+
+## Source ownership
+
+All runtime implementation lives under `src/`, governed by the explicit inventory
+in `scripts/publicModules.ts`. `audit:source` rejects extra runtime files, symlinks,
+and imports outside that source boundary. `audit:package` checks the independent
+compiled-file boundary on the exact tarball. New modules must be deliberately
+added to the reviewed inventory; copying a private directory is not a release
+procedure. Private repository Git history is never imported.
+
+The public client preserves explicit content and repository-observation opt-ins.
+It does not contain authentication server implementations, dispatch policy,
+backend estimation/calibration, infrastructure, production acceptance fixtures or
+production credentials. Synthetic tests stay in this repository, outside npm.
+
+`packages/connect` is a compatibility package over the versioned public client.
+Publish the matching MCP version before publishing Connect; its dependency is
+exact, so a different client implementation cannot enter that release silently.

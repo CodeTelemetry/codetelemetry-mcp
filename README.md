@@ -31,7 +31,7 @@ deterministic (see [Releases & discovery](#releases--discovery)):
 ```json
 {
   "mcpServers": {
-    "codetelemetry": { "command": "npx", "args": ["-y", "--package=@codetelemetry/mcp@0.3.9", "codetelemetry-mcp"] }
+    "codetelemetry": { "command": "npx", "args": ["-y", "--package=@codetelemetry/mcp@0.3.11", "codetelemetry-mcp"] }
   }
 }
 ```
@@ -42,6 +42,8 @@ Then just ask the agent: **"Connect me to CodeTelemetry."**
 
 | Tool | What it does |
 | --- | --- |
+| `count_reply_phrases` | Count how often your own phrases appear in your Claude model replies, per day or week and per model (turns, turns with a match, per-phrase counts). Plain-text phrases with `{a|b}` / `[a|b]` groups, whole-word and case-insensitive; main-thread replies only; counts and session references, never reply text. |
+| `import_history` | Import this machine's past Claude Code / Codex sessions (`~/.claude/projects`, `~/.codex/sessions`) through the normal ingest, tagged as imported. Dry run by default; skips sessions captured live or already imported; resumes interrupted imports; pages with `remaining`. Content defaults to `live` (what your live exporters send); `none` opts out. |
 | `authenticate` | Start device-code auth; returns a URL + short code for the human to approve. Optional `organizationId` connects one of the user's organizations; optional `workspaceUrl` picks a CodeTelemetry server (codetelemetry.com hosts only). |
 | `auth_status` | Poll the approval; on success captures the key into the session (masked-only to the model). |
 | `get_ingest_key` | Record a pasted key (fast path) or report the authenticated one — masked + hash only. |
@@ -297,7 +299,7 @@ npm run smoke -- --tarball out.tgz --require-auth             # exactly these by
 and read `server`:
 
 ```jsonc
-"server": { "name": "codetelemetry", "version": "0.3.9", "registryHash": "cb420922…", "toolCount": 21 }
+"server": { "name": "codetelemetry", "version": "0.3.11", "registryHash": "cb420922…", "toolCount": 23 }
 ```
 
 **When a long-running client sees a new tool.** `tools/list` is requested once, at
@@ -341,3 +343,19 @@ npm run typecheck
 `npm test` and `test:protocol` load `test/support/isolateHome.ts`, which
 points `HOME`, `USERPROFILE` and `CODEX_HOME` at a throwaway directory, so a test can
 never rewrite your own `~/.claude/settings.json` or Codex config.
+
+## Client implementation ownership
+
+This public repository owns the local client implementation. `src/client` contains
+configuration, privacy controls, HTTP adapters, history upload, and the bounded
+Kiro collector. The MCP server and Connect CLI share that implementation. Server
+authorization, analytics, dispatch policy and production operations are maintained
+separately and are not included in either package.
+
+Run the Connect CLI with `npx -p @codetelemetry/mcp codetelemetry-connect --help`.
+Kiro uses `codetelemetry-connect login --client kiro` and requires Node 24.
+`kiro status`, `kiro disable`, and `kiro uninstall` inspect or stop its owned service.
+Kiro reads local V3 transcripts with prompt/tool content disabled by default;
+`--enrich` explicitly opts into those fields. Linux/macOS support an owned user
+service; Windows uses foreground `kiro collect`. Configuration lives separately
+from Kiro itself. Checkpoints and owned runtime files survive service removal.

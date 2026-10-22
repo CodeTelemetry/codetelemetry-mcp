@@ -11,26 +11,7 @@ import {
   removeDir,
 } from "./harness.ts";
 
-const PUBLIC_MODULES = [
-  "src/index",
-  "src/manifest",
-  "src/mcpServer",
-  "src/server",
-  "src/session",
-  "src/tools",
-  "src/version",
-  "src/client/agent",
-  "src/client/codexConfig",
-  "src/client/config",
-  "src/client/connectivity",
-  "src/client/deviceClient",
-  "src/client/keys",
-  "src/client/onboard",
-  "src/client/otlp",
-  "src/client/plan",
-  "src/client/repositoryHook",
-  "src/client/settings",
-] as const;
+import { PUBLIC_MODULES } from "./publicModules.ts";
 
 const ALLOWED = new Set([
   "LICENSE",

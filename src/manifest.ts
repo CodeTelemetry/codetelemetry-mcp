@@ -1,11 +1,11 @@
 // The tool MANIFEST: the exact inventory a client sees from `tools/list`, in a
 // form that can be hashed, committed, and compared across three places that must
 // agree — the source registry (tools.ts), the packaged artifact (`npm pack`), and
-// the deployed/published package a customer actually installs.
+// the deployed/published package a customer actually installs (ELL-47).
 //
 // Why a hash and not just a version: two builds can both claim "0.2.0" while
-// serving different inventories, leaving a source-only tool absent from a client.
-// `registryHash` is derived from the
+// serving different inventories, which is exactly how `estimate_plan` could be
+// "Done" in source and absent from a client. `registryHash` is derived from the
 // wire-visible fields ONLY (name/title/description/inputSchema), so it answers
 // "which inventory is this process serving?" independently of the build's version.
 // The version is deliberately NOT part of the hash: a release that only bumps the

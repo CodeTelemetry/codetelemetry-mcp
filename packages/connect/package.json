@@ -1,0 +1,35 @@
+{
+  "name": "@codetelemetry/connect",
+  "version": "0.1.2",
+  "description": "CodeTelemetry local client and onboarding CLI",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CodeTelemetry/codetelemetry-mcp.git",
+    "directory": "packages/connect"
+  },
+  "bin": {
+    "codetelemetry-connect": "./bin/connect.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.mjs"
+    }
+  },
+  "files": [
+    "bin/connect.mjs",
+    "index.mjs",
+    "index.d.ts"
+  ],
+  "dependencies": {
+    "@codetelemetry/mcp": "0.3.11"
+  },
+  "engines": {
+    "node": ">=22.6"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

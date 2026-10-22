@@ -1,4 +1,4 @@
-// Normalize a coding-assistant PLAN (from Claude Code or Codex) into the
+// ELL-43: normalize a coding-assistant PLAN (from Claude Code or Codex) into the
 // task/context contract the shared sizing engine already consumes.
 //
 // A plan is either plain text or an ordered list of steps, plus optional title
@@ -14,8 +14,10 @@
 // echoed in `source` as context only. Only `repo` reaches the engine, where it
 // selects a repo-calibrated ladder.
 
-/** Mirrors the public API's maximum task-text length. The assembled plan text
- *  must fit it, so an over-long plan earns a clean local
+import { ONBOARD_CLIENTS } from "./assistants.ts";
+
+/** Mirrors the server's MAX_TASK_TEXT (packages/api sizing/taskMatching.ts). The
+ *  assembled plan text must fit it, so an over-long plan earns a clean local
  *  rejection instead of a server 400. */
 export const MAX_PLAN_TEXT = 4_000;
 export const MAX_PLAN_TITLE = 300;
@@ -26,9 +28,11 @@ export const MAX_PLAN_REPO = 200;
 export const MAX_PLAN_PROJECT = 200;
 export const MAX_PLAN_MODEL = 120;
 
-/** The recognized coding-assistant providers. Free-form is rejected so the field
- *  stays a stable enum a consumer can branch on. */
-export const PLAN_PROVIDERS = ["claude", "codex"] as const;
+/** The recognized coding-assistant providers: the assistants onboarding can
+ *  connect (a plan comes from an assistant the user runs with CodeTelemetry).
+ *  Free-form is rejected so the field stays a stable enum a consumer can
+ *  branch on. */
+export const PLAN_PROVIDERS = ONBOARD_CLIENTS;
 export type PlanProvider = (typeof PLAN_PROVIDERS)[number];
 
 /** One submitted plan step. A bare string is treated as the step's detail. */

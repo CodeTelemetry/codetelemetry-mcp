@@ -1,7 +1,7 @@
 {
   "name": "@codetelemetry/mcp",
-  "version": "0.3.9",
-  "description": "CodeTelemetry MCP server — lets a coding agent onboard a user end to end: authenticate (device code), obtain an ingest key, write the Claude Code OTEL config, send a test event, and confirm telemetry landed — then search, read, interpret and compare the user's own coding sessions, plan the next one, and size tasks, plans and Linear issues from that history. The plaintext key never enters the model's context.",
+  "version": "0.3.11",
+  "description": "CodeTelemetry MCP server \u2014 lets a coding agent onboard a user end to end: authenticate (device code), obtain an ingest key, write the Claude Code OTEL config, send a test event, and confirm telemetry landed \u2014 then search, read, interpret and compare the user's own coding sessions, plan the next one, and size tasks, plans and Linear issues from that history. The plaintext key never enters the model's context.",
   "type": "module",
   "license": "MIT",
   "homepage": "https://codetelemetry.com/docs/onboarding/mcp-server",
@@ -13,12 +13,180 @@
     "url": "https://github.com/CodeTelemetry/codetelemetry-mcp/issues"
   },
   "bin": {
-    "codetelemetry-mcp": "./dist/src/server.js"
+    "codetelemetry-mcp": "./dist/src/server.js",
+    "codetelemetry-connect": "./dist/src/client/bin.js",
+    "mcp": "./dist/src/server.js"
   },
   "exports": {
     ".": {
       "types": "./dist/src/index.d.ts",
       "default": "./dist/src/index.js"
+    },
+    "./client/agent": {
+      "types": "./dist/src/client/agent.d.ts",
+      "default": "./dist/src/client/agent.js"
+    },
+    "./client/assistants": {
+      "types": "./dist/src/client/assistants.d.ts",
+      "default": "./dist/src/client/assistants.js"
+    },
+    "./client/clients": {
+      "types": "./dist/src/client/clients.d.ts",
+      "default": "./dist/src/client/clients.js"
+    },
+    "./client/codexConfig": {
+      "types": "./dist/src/client/codexConfig.d.ts",
+      "default": "./dist/src/client/codexConfig.js"
+    },
+    "./client/config": {
+      "types": "./dist/src/client/config.d.ts",
+      "default": "./dist/src/client/config.js"
+    },
+    "./client/connectivity": {
+      "types": "./dist/src/client/connectivity.d.ts",
+      "default": "./dist/src/client/connectivity.js"
+    },
+    "./client/deviceClient": {
+      "types": "./dist/src/client/deviceClient.d.ts",
+      "default": "./dist/src/client/deviceClient.js"
+    },
+    "./client/keys": {
+      "types": "./dist/src/client/keys.d.ts",
+      "default": "./dist/src/client/keys.js"
+    },
+    "./client/onboard": {
+      "types": "./dist/src/client/onboard.d.ts",
+      "default": "./dist/src/client/onboard.js"
+    },
+    "./client/otlp": {
+      "types": "./dist/src/client/otlp.d.ts",
+      "default": "./dist/src/client/otlp.js"
+    },
+    "./client/piConfig": {
+      "types": "./dist/src/client/piConfig.d.ts",
+      "default": "./dist/src/client/piConfig.js"
+    },
+    "./client/plan": {
+      "types": "./dist/src/client/plan.d.ts",
+      "default": "./dist/src/client/plan.js"
+    },
+    "./client/repositoryHook": {
+      "types": "./dist/src/client/repositoryHook.d.ts",
+      "default": "./dist/src/client/repositoryHook.js"
+    },
+    "./client/settings": {
+      "types": "./dist/src/client/settings.d.ts",
+      "default": "./dist/src/client/settings.js"
+    },
+    "./client/hostMetrics": {
+      "types": "./dist/src/client/hostMetrics.d.ts",
+      "default": "./dist/src/client/hostMetrics.js"
+    },
+    "./client/yaml": {
+      "types": "./dist/src/client/yaml.d.ts",
+      "default": "./dist/src/client/yaml.js"
+    },
+    "./client/import/browser": {
+      "types": "./dist/src/client/import/browser.d.ts",
+      "default": "./dist/src/client/import/browser.js"
+    },
+    "./client/import/convert": {
+      "types": "./dist/src/client/import/convert.d.ts",
+      "default": "./dist/src/client/import/convert.js"
+    },
+    "./client/import/core": {
+      "types": "./dist/src/client/import/core.d.ts",
+      "default": "./dist/src/client/import/core.js"
+    },
+    "./client/import/ledger": {
+      "types": "./dist/src/client/import/ledger.d.ts",
+      "default": "./dist/src/client/import/ledger.js"
+    },
+    "./client/import/model": {
+      "types": "./dist/src/client/import/model.d.ts",
+      "default": "./dist/src/client/import/model.js"
+    },
+    "./client/import/options": {
+      "types": "./dist/src/client/import/options.d.ts",
+      "default": "./dist/src/client/import/options.js"
+    },
+    "./client/import/otlpImport": {
+      "types": "./dist/src/client/import/otlpImport.d.ts",
+      "default": "./dist/src/client/import/otlpImport.js"
+    },
+    "./client/import/protocol": {
+      "types": "./dist/src/client/import/protocol.d.ts",
+      "default": "./dist/src/client/import/protocol.js"
+    },
+    "./client/import/run": {
+      "types": "./dist/src/client/import/run.d.ts",
+      "default": "./dist/src/client/import/run.js"
+    },
+    "./client/import/transport": {
+      "types": "./dist/src/client/import/transport.d.ts",
+      "default": "./dist/src/client/import/transport.js"
+    },
+    "./client/import/sources/claudeCodeText": {
+      "types": "./dist/src/client/import/sources/claudeCodeText.d.ts",
+      "default": "./dist/src/client/import/sources/claudeCodeText.js"
+    },
+    "./client/import/sources/codexText": {
+      "types": "./dist/src/client/import/sources/codexText.d.ts",
+      "default": "./dist/src/client/import/sources/codexText.js"
+    },
+    "./client/import/sources/files": {
+      "types": "./dist/src/client/import/sources/files.d.ts",
+      "default": "./dist/src/client/import/sources/files.js"
+    },
+    "./client/kiro/collector": {
+      "types": "./dist/src/client/kiro/collector.d.ts",
+      "default": "./dist/src/client/kiro/collector.js"
+    },
+    "./client/kiro/command": {
+      "types": "./dist/src/client/kiro/command.d.ts",
+      "default": "./dist/src/client/kiro/command.js"
+    },
+    "./client/kiro/config": {
+      "types": "./dist/src/client/kiro/config.d.ts",
+      "default": "./dist/src/client/kiro/config.js"
+    },
+    "./client/kiro/records": {
+      "types": "./dist/src/client/kiro/records.d.ts",
+      "default": "./dist/src/client/kiro/records.js"
+    },
+    "./client/kiro/service": {
+      "types": "./dist/src/client/kiro/service.d.ts",
+      "default": "./dist/src/client/kiro/service.js"
+    },
+    "./client/kiro/state": {
+      "types": "./dist/src/client/kiro/state.d.ts",
+      "default": "./dist/src/client/kiro/state.js"
+    },
+    "./client/kiro/transport": {
+      "types": "./dist/src/client/kiro/transport.d.ts",
+      "default": "./dist/src/client/kiro/transport.js"
+    },
+    "./client": {
+      "types": "./dist/src/client/index.d.ts",
+      "default": "./dist/src/client/index.js"
+    },
+    "./cli": {
+      "types": "./dist/src/client/cli.d.ts",
+      "default": "./dist/src/client/cli.js"
+    },
+    "./tool-manifest.json": "./tool-manifest.json",
+    "./package.json": "./package.json",
+    "./server": {
+      "types": "./dist/src/mcpServer.d.ts",
+      "default": "./dist/src/mcpServer.js"
+    },
+    "./session": {
+      "types": "./dist/src/session.d.ts",
+      "default": "./dist/src/session.js"
+    },
+    "./tools": {
+      "types": "./dist/src/tools.d.ts",
+      "default": "./dist/src/tools.js"
     }
   },
   "files": [
@@ -29,8 +197,8 @@
     "access": "public"
   },
   "scripts": {
-    "build": "node scripts/cleanDist.ts && tsc -p tsconfig.build.json",
-    "test": "node --import ./test/support/isolateHome.ts --test test/tools.test.ts test/cost.test.ts test/performance.test.ts test/taskSize.test.ts test/estimatePlan.test.ts test/estimateLinearIssue.test.ts test/manifest.test.ts test/clientEdgeCases.test.ts",
+    "build": "npm run audit:source && node scripts/cleanDist.ts && tsc -p tsconfig.build.json",
+    "test": "node --import ./test/support/isolateHome.ts --test --test-concurrency=4 --test-timeout=120000 test/*.test.ts test/client/*.test.ts",
     "test:protocol": "node --import ./test/support/isolateHome.ts --test test/protocol.smoke.ts",
     "test:packaged": "node --test test/packaged.smoke.ts",
     "manifest:write": "node scripts/writeManifest.ts",
@@ -39,7 +207,9 @@
     "verify:publish-order": "node scripts/checkPublishOrder.ts",
     "smoke": "node scripts/mcpSmoke.ts",
     "typecheck": "tsc --noEmit",
-    "prepack": "npm run build && node scripts/verifyRegistry.ts --source"
+    "prepack": "npm run build && node scripts/verifyRegistry.ts --source",
+    "audit:source": "node scripts/auditSource.ts",
+    "test:client-packaged": "node --test test/clientPackaged.smoke.ts"
   },
   "engines": {
     "node": ">=22.6"

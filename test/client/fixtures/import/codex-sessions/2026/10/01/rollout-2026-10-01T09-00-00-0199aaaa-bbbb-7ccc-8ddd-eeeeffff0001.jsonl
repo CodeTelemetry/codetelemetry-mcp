@@ -1,0 +1,12 @@
+{"timestamp":"2026-10-01T09:00:00.000Z","type":"session_meta","payload":{"id":"0199aaaa-bbbb-7ccc-8ddd-eeeeffff0001","timestamp":"2026-10-01T09:00:00.000Z","cwd":"/work/svc","originator":"codex_cli_rs","cli_version":"0.144.2"}}
+{"timestamp":"2026-10-01T09:00:00.500Z","type":"turn_context","payload":{"turn_id":"t-1","cwd":"/work/svc","model":"gpt-5.2-codex"}}
+{"timestamp":"2026-10-01T09:00:01.000Z","type":"event_msg","payload":{"type":"user_message","client_id":"cx-p1","message":"add caching to the fetch layer","images":[]}}
+{"timestamp":"2026-10-01T09:00:10.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":2000,"cached_input_tokens":1500,"output_tokens":300,"total_tokens":2300},"last_token_usage":{"input_tokens":2000,"cached_input_tokens":1500,"output_tokens":300,"total_tokens":2300}}}}
+{"timestamp":"2026-10-01T09:00:10.500Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":2000,"cached_input_tokens":1500,"output_tokens":300,"total_tokens":2300},"last_token_usage":{"input_tokens":2000,"cached_input_tokens":1500,"output_tokens":300,"total_tokens":2300}},"rate_limits":{"primary":{"used_percent":10}}}}
+{"timestamp":"2026-10-01T09:00:12.000Z","type":"response_item","payload":{"type":"custom_tool_call","id":"ctc-1","status":"completed","call_id":"call-1","name":"exec","input":"ls -la"}}
+{"timestamp":"2026-10-01T09:00:14.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call-1","output":"{\"output\":\"ok\",\"metadata\":{\"exit_code\":0}}"}}
+{"timestamp":"2026-10-01T09:00:20.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":5000,"cached_input_tokens":3000,"output_tokens":800,"total_tokens":5800}}}}
+{"timestamp":"2026-10-01T09:00:30.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"total_tokens":150}}}}
+{"timestamp":"2026-10-01T09:00:30.500Z","type":"event_msg","payload":{"type":"agent_message","message":"Caching added."}}
+{"timestamp":"2026-10-01T09:00:31.000Z","type":"response_item","payload":{"type":"function_call","id":"fc-1","name":"wait","arguments":"{\"ms\":5}","call_id":"call-2"}}
+oops not json
