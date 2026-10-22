@@ -16,9 +16,9 @@ export const KIRO_LIMITS = Object.freeze({
 });
 export type KiroCall = {id: string; name: string; executionId: string | null; input?: string; status?: string; denied?: true};
 export type KiroRecordState = {seen: Array<[string, string]>; calls: KiroCall[]};
-export type KiroRecordCounters = {unknown: number; malformed: number; duplicates: number; callsEvicted: number; missingCalls: number; unsupportedDetails: number};
+export type KiroRecordCounters = {unknown: number; malformed: number; duplicates: number; callsEvicted: number; unsupportedDetails: number};
 export const emptyRecordState = (): KiroRecordState => ({seen: [], calls: []});
-export const emptyRecordCounters = (): KiroRecordCounters => ({unknown: 0, malformed: 0, duplicates: 0, callsEvicted: 0, missingCalls: 0, unsupportedDetails: 0});
+export const emptyRecordCounters = (): KiroRecordCounters => ({unknown: 0, malformed: 0, duplicates: 0, callsEvicted: 0, unsupportedDetails: 0});
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 export const KIRO_CREDENTIAL_RE = /(?:-----BEGIN [A-Z ]+(?:PRIVATE KEY|CREDENTIAL)-----|\bBearer\s+[A-Za-z0-9._~+\/-]+=*|\b(?:api[_-]?key|authorization|client[_-]?secret|password|passwd|secret|token|accountkey)\s*[:=]\s*\S+|\bAKIA[0-9A-Z]{16}\b|\bASIA[0-9A-Z]{16}\b|\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}\b|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bxox[baprs]-[A-Za-z0-9-]{10,}\b|\bnpm_[A-Za-z0-9]{20,}\b|\bAIza[A-Za-z0-9_-]{20,}\b|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b|https?:\/\/[^\s/]*:[^\s/@]+@)/i;
 const sourceId = (value: unknown): string | null => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(value) && !KIRO_CREDENTIAL_RE.test(value) && !looksLikeKey(value) ? value : null;

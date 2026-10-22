@@ -13,8 +13,8 @@ const RESOURCE = {"service.name": "kiro-cli"};
 const SCOPE = {name: "codetelemetry-connect.kiro-source", version: "1"};
 type Carry = {mtime:number; physical: string; readOffset: number; buffer: Buffer; skipping: boolean; initialSkip: boolean};
 type Pending = KiroPending & {rootHash: string; destinationHash: string; policyHash: string; lastOutcome?: string};
-export type KiroHealth = {version: 1; status: string; trackedSessions: number; parkedSessions: number; skippingOversizeSessions:number; cachedTailBytes:number; cachedTailSessions:number; carryEvictions: number; discoveryBacklog: number; backloggedSessions: number; unsupportedSessions: number;
-  sourceConflicts: number; sourceErrors: number; ignoredRecords: number; malformedRecords: number; duplicateRecords: number; evictedCalls: number; missingCalls: number; unsupportedToolDetails: number; discoveryOverflow: number; oversizeRecords: number; readBytes: number;
+export type KiroHealth = {version: 2; status: string; trackedSessions: number; parkedSessions: number; skippingOversizeSessions:number; cachedTailBytes:number; cachedTailSessions:number; carryEvictions: number; discoveryBacklog: number; backloggedSessions: number; unsupportedSessions: number;
+  sourceConflicts: number; sourceErrors: number; ignoredRecords: number; malformedRecords: number; duplicateRecords: number; evictedCalls: number; missingCalls?: number; unsupportedToolDetails: number; discoveryOverflow: number; oversizeRecords: number; readBytes: number;
   logsAcknowledged: number; requests: number; pending: boolean; lastTickAt: number};
 export type KiroCollectorOptions = {sourceRoot: string; stateDir: string; destinationHash: string; post: KiroPost; policy?: ContentPolicy;
   now?: () => number; tickBudgetMs?: number; bootstrap?: "start" | "end"};
@@ -68,8 +68,8 @@ export class KiroCollector {
   private running = false;
   private lastPostAt = -Infinity;
   private startedAt: number;
-  private health: KiroHealth = {version: 1, status: "idle", trackedSessions: 0, parkedSessions: 0, skippingOversizeSessions:0, cachedTailBytes:0, cachedTailSessions:0, carryEvictions: 0, discoveryBacklog: 0, backloggedSessions: 0, unsupportedSessions: 0,
-    sourceConflicts: 0, sourceErrors: 0, ignoredRecords: 0, malformedRecords: 0, duplicateRecords: 0, evictedCalls: 0, missingCalls: 0, unsupportedToolDetails: 0, discoveryOverflow: 0, oversizeRecords: 0, readBytes: 0, logsAcknowledged: 0,
+  private health: KiroHealth = {version: 2, status: "idle", trackedSessions: 0, parkedSessions: 0, skippingOversizeSessions:0, cachedTailBytes:0, cachedTailSessions:0, carryEvictions: 0, discoveryBacklog: 0, backloggedSessions: 0, unsupportedSessions: 0,
+    sourceConflicts: 0, sourceErrors: 0, ignoredRecords: 0, malformedRecords: 0, duplicateRecords: 0, evictedCalls: 0, unsupportedToolDetails: 0, discoveryOverflow: 0, oversizeRecords: 0, readBytes: 0, logsAcknowledged: 0,
     requests: 0, pending: false, lastTickAt: 0};
   readonly recordCounters = emptyRecordCounters();
   constructor(options: KiroCollectorOptions) {
@@ -413,7 +413,7 @@ export class KiroCollector {
     this.health.malformedRecords = this.recordCounters.malformed;
     this.health.duplicateRecords = this.recordCounters.duplicates;
     this.health.evictedCalls = this.recordCounters.callsEvicted;
-    this.health.missingCalls = this.recordCounters.missingCalls;
+    // Call association is server-owned; omit its unmeasured count instead of reporting zero.
     this.health.unsupportedToolDetails = this.recordCounters.unsupportedDetails;
     return this.snapshot();
   }

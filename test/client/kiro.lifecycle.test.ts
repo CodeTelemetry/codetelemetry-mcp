@@ -57,7 +57,7 @@ test("dormant cursors preserve pending tool pairs and incomplete frames across r
   await c.close();c=new KiroCollector(options);await c.open();
   await fs.appendFile(file,record("result-one",{type:"tool_result",toolCallId:"call-one",executionId:"turn-one",success:false})+"\n");
   for(let i=0;i<12&&!captured.length;i++){await c.tick();now+=1000;}
-  const wire=JSON.parse(String(captured[0]["kiro.source.record"]));assert.equal(wire.context[0].name,"read_file");assert.equal(wire.payload.success,false);assert.equal(c.snapshot().missingCalls,0);
+  const wire=JSON.parse(String(captured[0]["kiro.source.record"]));assert.equal(wire.context[0].name,"read_file");assert.equal(wire.payload.success,false);assert.equal(c.snapshot().missingCalls,undefined);
   const partial=record("partial-after-restart",{type:"user",content:"x".repeat(80000)});
   await fs.appendFile(file,partial.slice(0,40000));for(let i=0;i<12;i++){await c.tick();now+=1000;}
   state=JSON.parse(await fs.readFile(path.join(f.stateDir,"checkpoint.json"),"utf8"));assert.equal(state.parked[0].awaitingMore,true);

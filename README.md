@@ -366,3 +366,6 @@ The service must support `kiro-v3-source-v1` before this collector is released;
 unsupported responses leave the pending upload and source offsets intact.
 Checkpoint versions 1 and 2 upgrade to version 3; older collector binaries refuse
 version 3. Existing canonical pending uploads retain their exact retry bytes.
+
+Collector health version 2 reports local capture and delivery counters. It omits
+call-association counts that are now computed by the service.
