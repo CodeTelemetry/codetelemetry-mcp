@@ -5,9 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
 import {execFileSync} from "node:child_process";
-import {extractTarball, packLocal, runNpm} from "../scripts/harness.ts";
+import {Client} from "@modelcontextprotocol/sdk/client/index.js";
+import {StdioClientTransport} from "@modelcontextprotocol/sdk/client/stdio.js";
+import {extractTarball, packLocal, runNpm, sanitizeEnvForSubprocess} from "../scripts/harness.ts";
 
-test("installed Connect and Kiro service use only the public client artifact", {timeout: 120_000}, t => {
+test("installed Connect and Kiro service use only the public client artifact", {timeout: 120_000}, async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ct-client-package-"));
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
   const tarball = process.env.CODETELEMETRY_TEST_TARBALL ?? packLocal(root);
@@ -26,6 +28,16 @@ test("installed Connect and Kiro service use only the public client artifact", {
   const config = execFileSync(process.execPath, [cli, "print-config"], {encoding: "utf8", timeout: 10_000});
   assert.match(config, /OTEL_EXPORTER_OTLP/);
   assert.match(execFileSync(process.execPath, [cli, "--help"], {encoding: "utf8", timeout: 10_000}), /kiro status/);
+  // Adding the Connect bin must not make npm unable to infer the MCP entry point.
+  const env = Object.fromEntries(Object.entries(sanitizeEnvForSubprocess()).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  const client = new Client({name: "installed-client-boundary", version: "1.0.0"});
+  try {
+    await client.connect(new StdioClientTransport({command: "npx", args: ["--offline", "--no-install", "@codetelemetry/mcp"], cwd: customer,
+      env: {...env, HOME: root, USERPROFILE: root, CODEX_HOME: path.join(root, ".codex")}, stderr: "pipe"}));
+    const result = await client.listTools();
+    assert.ok(result.tools.some(tool => tool.name === "import_history"));
+    assert.ok(result.tools.some(tool => tool.name === "onboard"));
+  } finally { await client.close(); }
   // The stable runtime must survive npm cache eviction and must not copy MCP or backend modules.
   const smoke = path.join(customer, "service.mjs");
   fs.writeFileSync(smoke, `
