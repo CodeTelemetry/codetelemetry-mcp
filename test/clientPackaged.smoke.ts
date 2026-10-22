@@ -8,6 +8,7 @@ import {execFileSync} from "node:child_process";
 import {Client} from "@modelcontextprotocol/sdk/client/index.js";
 import {StdioClientTransport} from "@modelcontextprotocol/sdk/client/stdio.js";
 import {extractTarball, packLocal, runNpm, sanitizeEnvForSubprocess} from "../scripts/harness.ts";
+import {PUBLIC_MODULES} from "../scripts/publicModules.ts";
 
 test("installed Connect and Kiro service use only the public client artifact", {timeout: 120_000}, async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ct-client-package-"));
@@ -18,16 +19,25 @@ test("installed Connect and Kiro service use only the public client artifact", {
   const metadata = JSON.parse(fs.readFileSync(path.join(pkg, "package.json"), "utf8"));
   const wrapper = fileURLToPath(new URL("../packages/connect", import.meta.url));
   const wrapperMeta = JSON.parse(fs.readFileSync(path.join(wrapper, "package.json"), "utf8"));
-  assert.equal(wrapperMeta.dependencies["@codetelemetry/mcp"], metadata.version);
-  const packed = JSON.parse(runNpm(["pack", "--ignore-scripts", "--json", "--pack-destination", root], wrapper))[0];
+  assert.equal(wrapperMeta.dependencies, undefined, "Connect must not pull in the MCP SDK");
+  const packed = JSON.parse(runNpm(["pack", "--json", "--pack-destination", root], wrapper))[0];
+  const clientFiles = PUBLIC_MODULES.filter(name => name.startsWith("src/client/")).flatMap(name => {
+    const relative = name.slice("src/client/".length); return [`dist/${relative}.js`, `dist/${relative}.d.ts`];
+  });
   assert.deepEqual(packed.files.map((entry: {path: string}) => entry.path).sort(),
-    ["LICENSE", "README.md", "bin/connect.mjs", "index.d.ts", "index.mjs", "package.json"]);
+    ["LICENSE", "README.md", "package.json", ...clientFiles].sort());
+  const connectUnpack = path.join(root, "connect-unpack"); fs.mkdirSync(connectUnpack);
+  const connectPackage = extractTarball(path.join(root, packed.filename), connectUnpack);
+  for (const file of clientFiles) assert.deepEqual(fs.readFileSync(path.join(connectPackage, file)),
+    fs.readFileSync(path.join(pkg, file.replace("dist/", "dist/src/client/"))), `${file} is built from the same public source`);
   const customer = path.join(root, "customer"); fs.mkdirSync(customer);
-  runNpm(["install", "--ignore-scripts", "--no-package-lock", tarball, path.join(root, packed.filename)], customer);
-  const cli = path.join(customer, "node_modules/@codetelemetry/connect/bin/connect.mjs");
+  runNpm(["install", "--ignore-scripts", "--no-package-lock", path.join(root, packed.filename)], customer);
+  assert.equal(fs.existsSync(path.join(customer, "node_modules/@modelcontextprotocol")), false);
+  const cli = path.join(customer, "node_modules/@codetelemetry/connect/dist/bin.js");
   const config = execFileSync(process.execPath, [cli, "print-config"], {encoding: "utf8", timeout: 10_000});
   assert.match(config, /OTEL_EXPORTER_OTLP/);
   assert.match(execFileSync(process.execPath, [cli, "--help"], {encoding: "utf8", timeout: 10_000}), /kiro status/);
+  runNpm(["install", "--ignore-scripts", "--no-package-lock", tarball], customer);
   // Adding the Connect bin must not make npm unable to infer the MCP entry point.
   const env = Object.fromEntries(Object.entries(sanitizeEnvForSubprocess()).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
   const client = new Client({name: "installed-client-boundary", version: "1.0.0"});

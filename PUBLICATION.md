@@ -49,6 +49,7 @@ It does not contain authentication server implementations, dispatch policy,
 backend estimation/calibration, infrastructure, production acceptance fixtures or
 production credentials. Synthetic tests stay in this repository, outside npm.
 
-`packages/connect` is a compatibility package over the versioned public client.
-Publish the matching MCP version before publishing Connect; its dependency is
-exact, so a different client implementation cannot enter that release silently.
+`packages/connect` builds its client-only artifact from the same `src/client`
+modules, with no runtime dependency on the MCP SDK. The packaged smoke compares
+every emitted client module byte-for-byte between the two artifacts and checks
+the complete Connect file inventory. Neither release builds from a private repo.

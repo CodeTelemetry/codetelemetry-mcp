@@ -10,26 +10,25 @@
     "directory": "packages/connect"
   },
   "bin": {
-    "codetelemetry-connect": "./bin/connect.mjs"
+    "codetelemetry-connect": "./dist/bin.js"
   },
   "exports": {
     ".": {
-      "types": "./index.d.ts",
-      "default": "./index.mjs"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     }
   },
   "files": [
-    "bin/connect.mjs",
-    "index.mjs",
-    "index.d.ts"
+    "dist"
   ],
-  "dependencies": {
-    "@codetelemetry/mcp": "0.3.11"
-  },
   "engines": {
     "node": ">=22.6"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "scripts": {
+    "build": "node ../../scripts/buildConnect.ts",
+    "prepack": "npm run build"
   }
 }
