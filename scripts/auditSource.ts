@@ -18,7 +18,11 @@ export function auditSource(root: string): string[] {
   visit("src");
   for (const file of found) {
     if (!allowed.has(file)) { problems.push(`${file}: outside the reviewed public runtime inventory`); continue; }
-    const source = ts.createSourceFile(file, fs.readFileSync(path.join(root, file), "utf8"), ts.ScriptTarget.Latest, true);
+    const content = fs.readFileSync(path.join(root, file), "utf8");
+    if (file.startsWith("src/client/kiro/") && /provider_turn_usage|turn_completion|usage[.]amount|turn[.]status|turn[.]stop_reason/.test(content)) {
+      problems.push(`${file}: product interpretation belongs to private ingestion`);
+    }
+    const source = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true);
     const check = (specifier: string) => {
       if (specifier.startsWith("node:") || specifier.startsWith("@modelcontextprotocol/sdk/")) return;
       const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(file), specifier));

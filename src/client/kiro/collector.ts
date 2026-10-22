@@ -10,7 +10,7 @@ import { cleanKiroState, claimKiroState, KIRO_SESSION_ID, KIRO_WORKSPACE, readBo
 import type { KiroPost } from "./transport.ts";
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const RESOURCE = {"service.name": "kiro-cli"};
-const SCOPE = {name: "codetelemetry-connect.kiro-v3", version: "1"};
+const SCOPE = {name: "codetelemetry-connect.kiro-source", version: "1"};
 type Carry = {mtime:number; physical: string; readOffset: number; buffer: Buffer; skipping: boolean; initialSkip: boolean};
 type Pending = KiroPending & {rootHash: string; destinationHash: string; policyHash: string; lastOutcome?: string};
 export type KiroHealth = {version: 1; status: string; trackedSessions: number; parkedSessions: number; skippingOversizeSessions:number; cachedTailBytes:number; cachedTailSessions:number; carryEvictions: number; discoveryBacklog: number; backloggedSessions: number; unsupportedSessions: number;

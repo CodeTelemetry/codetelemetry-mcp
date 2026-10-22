@@ -11,7 +11,7 @@ export type KiroSessionCheckpoint = {
   observedSize?: number; observedMtimeMs?: number; activationOffset?: number; awaitingMore?: boolean;
   blocked?: "unsupported_schema" | "source_conflict" | "source_error";
 };
-export type KiroCheckpoint = {version: 2; rootHash: string; destinationHash: string; cursor: number; retirementCursor: number; sessions: KiroSessionCheckpoint[]; parked: KiroSessionCheckpoint[]};
+export type KiroCheckpoint = {version: 3; rootHash: string; destinationHash: string; cursor: number; retirementCursor: number; sessions: KiroSessionCheckpoint[]; parked: KiroSessionCheckpoint[]};
 export type KiroPending = {version: 1; privacyVersion?: 2; id: string; body: string; digest: string; createdAt: number; attempts: number;
   nextAttemptAt: number; updates: KiroSessionCheckpoint[]};
 
@@ -34,23 +34,24 @@ export function validateSession(value: unknown): asserts value is KiroSessionChe
     if (!call || typeof call.id !== "string" || call.id.length > 256 || typeof call.name !== "string" || call.name.length > 128 ||
       (call.executionId !== null && (typeof call.executionId !== "string" || call.executionId.length > 256)) ||
       (call.input !== undefined && (typeof call.input !== "string" || call.input.length > KIRO_LIMITS.toolInputChars)) ||
+      (call.status !== undefined && (typeof call.status !== "string" || call.status.length > 256)) ||
       (call.denied !== undefined && call.denied !== true)) throw new Error("invalid Kiro call checkpoint");
   }
 }
 /** A single atomic file owns active and dormant cursors, so crashes cannot
- * publish a retirement without its acknowledged offset. Version 1 stays readable;
- * older binaries reject version 2 rather than silently deleting dormant cursors. */
+ * publish a retirement without its acknowledged offset. Versions 1 and 2 stay readable;
+ * older binaries reject version 3 rather than misreading source-context state. */
 export function normalizeKiroCheckpoint(value: unknown, rootHash: string, destinationHash: string): KiroCheckpoint {
-  if(value === null) return {version:2,rootHash,destinationHash,cursor:0,retirementCursor:0,sessions:[],parked:[]};
+  if(value === null) return {version:3,rootHash,destinationHash,cursor:0,retirementCursor:0,sessions:[],parked:[]};
   const v=value as Record<string,unknown>;
-  if(!v || (v.version!==1 && v.version!==2) || v.rootHash!==rootHash || v.destinationHash!==destinationHash || !Array.isArray(v.sessions) || v.sessions.length>KIRO_LIMITS.sessions || !Number.isSafeInteger(v.cursor) || Number(v.cursor)<0) throw new Error("unsupported Kiro checkpoint contract");
-  const parked=v.version===2?v.parked:[];
-  const retirementCursor=v.version===2?v.retirementCursor:0;
+  if(!v || (v.version!==1 && v.version!==2 && v.version!==3) || v.rootHash!==rootHash || v.destinationHash!==destinationHash || !Array.isArray(v.sessions) || v.sessions.length>KIRO_LIMITS.sessions || !Number.isSafeInteger(v.cursor) || Number(v.cursor)<0) throw new Error("unsupported Kiro checkpoint contract");
+  const parked=v.version!==1?v.parked:[];
+  const retirementCursor=v.version!==1?v.retirementCursor:0;
   if(!Array.isArray(parked) || parked.length+v.sessions.length>KIRO_LIMITS.registeredSessions || !Number.isSafeInteger(retirementCursor) || Number(retirementCursor)<0) throw new Error("unsupported Kiro checkpoint registry");
   for(const row of [...v.sessions,...parked]) validateSession(row);
   if(parked.some(row=>(row as KiroSessionCheckpoint).records.seen.length>KIRO_LIMITS.parkedReplayEntries)) throw new Error("oversized Kiro dormant replay ledger");
   if(new Set([...v.sessions,...parked].map(row=>(row as KiroSessionCheckpoint).id)).size!==v.sessions.length+parked.length) throw new Error("duplicate Kiro checkpoint ownership");
-  return {version:2,rootHash,destinationHash,cursor:Number(v.cursor),retirementCursor:Number(retirementCursor),sessions:(v.sessions as KiroSessionCheckpoint[]).map(row=>({...row,activationOffset:row.activationOffset??row.offset})),parked:parked as KiroSessionCheckpoint[]};
+  return {version:3,rootHash,destinationHash,cursor:Number(v.cursor),retirementCursor:Number(retirementCursor),sessions:(v.sessions as KiroSessionCheckpoint[]).map(row=>({...row,activationOffset:row.activationOffset??row.offset})),parked:parked as KiroSessionCheckpoint[]};
 }
 export async function readBoundedJson(file: string, maxBytes: number): Promise<unknown | null> {
   let handle: Awaited<ReturnType<typeof fs.open>>;

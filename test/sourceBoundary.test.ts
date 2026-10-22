@@ -11,6 +11,11 @@ test("public runtime fails closed on new files, external imports and symlinks", 
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
   fs.cpSync(fileURLToPath(new URL("../src", import.meta.url)), path.join(root, "src"), {recursive: true});
   assert.deepEqual(auditSource(root), []);
+  const kiro = path.join(root, "src/client/kiro/records.ts");
+  const original = fs.readFileSync(kiro, "utf8");
+  fs.appendFileSync(kiro, '\nconst forbiddenMapping = "provider_turn_usage";\n');
+  assert.ok(auditSource(root).some(problem => problem.includes("product interpretation belongs to private ingestion")));
+  fs.writeFileSync(kiro, original);
   fs.writeFileSync(path.join(root, "src/accidentalBackend.ts"), "export {};\n");
   assert.ok(auditSource(root).some(problem => problem.includes("accidentalBackend.ts")));
   fs.rmSync(path.join(root, "src/accidentalBackend.ts"));

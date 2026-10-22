@@ -38,3 +38,20 @@ test("the request has an absolute timeout and exposes no raw fetch error", async
   context.mock.timers.tick(KIRO_LIMITS.requestMs);
   assert.equal(await result, "retry");
 });
+
+test("source format requires server acknowledgement; legacy pending bytes retain their protocol",async()=>{
+ const body=JSON.stringify({resourceLogs:[{scopeLogs:[{logRecords:[{attributes:[{key:"event.name",value:{stringValue:"kiro.source_record"}}]}]}]}]});
+ for(const acknowledged of [false,true]) {
+  const send=kiroTransport({endpoint:"https://ingest.example.test",key,fetchImpl:async(_url,init)=>{
+   assert.equal((init!.headers as Record<string,string>)["x-codetelemetry-source-format"],"kiro-v3-source-v1");
+   return new Response("{}",{status:200,headers:acknowledged?{"x-codetelemetry-source-format":"kiro-v3-source-v1"}:{}});
+  }});
+  assert.equal(await send(body,delivery),acknowledged?"ok":"rejected");
+ }
+ const old=kiroTransport({endpoint:"https://ingest.example.test",key,fetchImpl:async(_url,init)=>{
+  assert.equal((init!.headers as Record<string,string>)["x-codetelemetry-source-format"],undefined);
+  return new Response("{}",{status:200});
+ }});
+ assert.equal(await old('{"resourceLogs":[]}',delivery),"ok");
+ assert.equal(await old('{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"attributes":[{"key":"prompt","value":{"stringValue":"kiro.source_record"}}]}]}]}]}',delivery),"ok");
+});

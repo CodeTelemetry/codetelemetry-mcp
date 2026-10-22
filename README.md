@@ -359,3 +359,10 @@ Kiro reads local V3 transcripts with prompt/tool content disabled by default;
 `--enrich` explicitly opts into those fields. Linux/macOS support an owned user
 service; Windows uses foreground `kiro collect`. Configuration lives separately
 from Kiro itself. Checkpoints and owned runtime files survive service removal.
+
+The Kiro collector sends bounded, sanitized source records. Event interpretation,
+call/result association, usage aggregation and analytics run in the service.
+The service must support `kiro-v3-source-v1` before this collector is released;
+unsupported responses leave the pending upload and source offsets intact.
+Checkpoint versions 1 and 2 upgrade to version 3; older collector binaries refuse
+version 3. Existing canonical pending uploads retain their exact retry bytes.

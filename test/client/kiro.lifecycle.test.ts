@@ -53,11 +53,11 @@ test("dormant cursors preserve pending tool pairs and incomplete frames across r
  const options={...f,policy:{prompts:false,toolDetails:true},now:()=>now,post:async(body:string)=>{captured.push(...logs(body).map(attrs));return "ok" as const;}};
  let c=new KiroCollector(options);
  try{await c.open();for(let i=0;i<4;i++){await c.tick();now+=1000;}
-  let state=JSON.parse(await fs.readFile(path.join(f.stateDir,"checkpoint.json"),"utf8"));assert.equal(state.version,2);assert.equal(state.parked[0].records.calls.length,1);
+  let state=JSON.parse(await fs.readFile(path.join(f.stateDir,"checkpoint.json"),"utf8"));assert.equal(state.version,3);assert.equal(state.parked[0].records.calls.length,1);
   await c.close();c=new KiroCollector(options);await c.open();
   await fs.appendFile(file,record("result-one",{type:"tool_result",toolCallId:"call-one",executionId:"turn-one",success:false})+"\n");
   for(let i=0;i<12&&!captured.length;i++){await c.tick();now+=1000;}
-  assert.equal(captured[0]["tool_name"],"read_file");assert.equal(captured[0]["success"],false);assert.equal(c.snapshot().missingCalls,0);
+  const wire=JSON.parse(String(captured[0]["kiro.source.record"]));assert.equal(wire.context[0].name,"read_file");assert.equal(wire.payload.success,false);assert.equal(c.snapshot().missingCalls,0);
   const partial=record("partial-after-restart",{type:"user",content:"x".repeat(80000)});
   await fs.appendFile(file,partial.slice(0,40000));for(let i=0;i<12;i++){await c.tick();now+=1000;}
   state=JSON.parse(await fs.readFile(path.join(f.stateDir,"checkpoint.json"),"utf8"));assert.equal(state.parked[0].awaitingMore,true);
@@ -79,7 +79,7 @@ test("version-1 checkpoint migration preserves an uncertain exact-envelope retry
   for(const row of state.sessions){delete row.activationOffset;delete row.observedSize;delete row.observedMtimeMs;}
   await fs.writeFile(checkpoint,JSON.stringify(state));now+=2000;
   c=new KiroCollector({...f,now:()=>now,post:async(body,key)=>{sent.push({body,key});return "ok";}});await c.open();await c.tick();
-  assert.deepEqual(sent[1],sent[0]);assert.equal(JSON.parse(await fs.readFile(checkpoint,"utf8")).version,2);
+  assert.deepEqual(sent[1],sent[0]);assert.equal(JSON.parse(await fs.readFile(checkpoint,"utf8")).version,3);
  }finally{await c.close();await fs.rm(f.root,{recursive:true,force:true});}
 });
 

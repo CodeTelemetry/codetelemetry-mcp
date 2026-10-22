@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { looksLikeKey, scrub as scrubKey } from "../keys.ts";
-import type { ContentPolicy, ImportAttributes, ImportLog } from "../import/model.ts";
+import type { ContentPolicy, ImportLog } from "../import/model.ts";
 
 export const KIRO_LIMITS = Object.freeze({
   sessions: 128, sessionsPerTick: 8, directoryEntriesPerTick: 512,
@@ -14,7 +14,7 @@ export const KIRO_LIMITS = Object.freeze({
   requestMs: 10_000, retryHorizonMs: 23 * 60 * 60 * 1000,
   maxAttempts: 1000, requestGapMs: 1000,
 });
-export type KiroCall = {id: string; name: string; executionId: string | null; input?: string; denied?: true};
+export type KiroCall = {id: string; name: string; executionId: string | null; input?: string; status?: string; denied?: true};
 export type KiroRecordState = {seen: Array<[string, string]>; calls: KiroCall[]};
 export type KiroRecordCounters = {unknown: number; malformed: number; duplicates: number; callsEvicted: number; missingCalls: number; unsupportedDetails: number};
 export const emptyRecordState = (): KiroRecordState => ({seen: [], calls: []});
@@ -26,7 +26,7 @@ const object = (value: unknown): Record<string, unknown> | null => value !== nul
 export class KiroSourceConflictError extends Error {
   constructor() {super("Kiro source record identity conflicts with previously captured content"); this.name = "KiroSourceConflictError";}
 }
-function semanticDigest(value: unknown): string {
+function recordDigest(value: unknown): string {
   let nodes = 0;
   const ordered = (item: unknown, depth: number): unknown => {
     if (++nodes > 20_000 || depth > 32) throw new Error("Kiro source structure exceeds bound");
@@ -55,11 +55,11 @@ function scrub(value: string, max: number): string {
 
 /** Unknown argument fields can contain private provider metadata. Do not
  * forward them merely because the tool's display name is familiar. */
-function verifiedToolArgs(name:string,value:unknown):Record<string,unknown>|null {
+function allowedToolArgs(name:string,value:unknown):Record<string,unknown>|null {
   const args=object(value);
   if(!args) return null;
   const only=(keys:readonly string[])=>Object.keys(args).every(key=>keys.includes(key));
-  if(name==="execute_bash") return only(["command","cwd","run_in_background"]) && typeof args.command==="string" && typeof args.cwd==="string" && args.run_in_background===false ? args : null;
+  if(name==="execute_bash") return only(["command","cwd","run_in_background"]) && typeof args.command==="string" && typeof args.cwd==="string" && typeof args.run_in_background==="boolean" ? args : null;
   if(typeof args.path!=="string") return null;
   if(name==="read_file") return only(["path","offset","limit"]) &&
     (args.offset==null || (Number.isSafeInteger(args.offset)&&Number(args.offset)>=0)) &&
@@ -69,17 +69,18 @@ function verifiedToolArgs(name:string,value:unknown):Record<string,unknown>|null
   return null;
 }
 
-/** Redacted/truncated tool text cannot support exact edit or command facts.
- * Check raw scalar values before JSON encoding; never export modified input. */
-function verifiedEncodedInput(name:string,value:unknown):string|undefined {
- const args=verifiedToolArgs(name,value);if(!args) return undefined;
+/** Check raw scalar values before JSON encoding. Withhold an entire argument
+ * object when secret removal or truncation would change it. */
+function privateInput(name:string,value:unknown):string|undefined {
+ const args=allowedToolArgs(name,value);if(!args) return undefined;
  const encoded=JSON.stringify(args);if(encoded.length>KIRO_LIMITS.toolInputChars) return undefined;
  if(Object.values(args).some(item=>typeof item==="string" && (scrub(item,item.length)!==item || /<REDACTED>|cot_…/.test(item)))) return undefined;
  return encoded;
 }
 
-/** Mutates staged state only; persist after its emitted logs are acknowledged.
- * Assistant notes, reasoning, signatures and hook payloads never leave this parser. */
+/** Capture source data only. The private ingest service interprets it. Recent
+ * sanitized calls are transport context, never joined or classified here.
+ * Existing replay digests and checkpoint offsets remain upgrade-compatible. */
 export function applyKiroRecord(state: KiroRecordState, line: Uint8Array, sessionId: string, policy: ContentPolicy,
   counters: KiroRecordCounters): ImportLog[] {
   if (line.byteLength > KIRO_LIMITS.recordBytes || !sourceId(sessionId)) {counters.malformed++; return [];}
@@ -93,75 +94,64 @@ export function applyKiroRecord(state: KiroRecordState, line: Uint8Array, sessio
   const id = sourceId(record.id), executionId = sourceId(payload.executionId), nano = sourceNano(record.timestamp);
   if (!id || !nano) {counters.malformed++; return [];}
   let digest: string;
-  try {digest = semanticDigest(record);} catch {counters.malformed++; return [];}
+  try {digest = recordDigest(record);} catch {counters.malformed++; return [];}
   const identity = hash(id), prior = state.seen.find(entry => entry[0] === identity);
   if (prior) {
     if (prior[1] !== digest) throw new KiroSourceConflictError();
     counters.duplicates++; return [];
   }
-  const attrs: ImportAttributes = {"session.id": sessionId, "source.event.id": id,
-    "telemetry.source": "kiro-v3-local-transcript", "telemetry.contract.version": 1};
-  if (executionId) attrs["source.execution.id"] = executionId;
-  const log = (name: string): ImportLog[] => {attrs["event.name"] = name; return [{timeUnixNano: nano, attributes: attrs}];};
-  let logs: ImportLog[] = [];
+  const source: Record<string, unknown> = {type:kind, ...(executionId ? {executionId} : {})};
   if (kind === "user") {
-    attrs["prompt.id"] = id; attrs.request_id = id;
     if (typeof payload.content === "string") {
-      attrs.prompt_length = payload.content.length;
-      if (policy.prompts) attrs.prompt = scrub(payload.content, KIRO_LIMITS.promptChars);
+      source.contentLength = payload.content.length;
+      if (policy.prompts) source.content = scrub(payload.content, KIRO_LIMITS.promptChars);
     }
-    logs = log("user_prompt");
   } else if (kind === "tool_call") {
     const callId = sourceId(payload.toolCallId), name = sourceId(payload.toolName);
     if (!callId || !name || name.length > 128) {counters.malformed++; return [];}
-    const existing = state.calls.find(call => call.id === callId);
-    if (existing && (existing.name !== name || existing.executionId !== executionId)) throw new KiroSourceConflictError();
-    let input: string | undefined;
-    // ELL-414's controlled corpus proves these closed shapes only. Never
-    // truncate JSON into an invalid partial command or edit measurement.
-    if(policy.toolDetails) input=verifiedEncodedInput(name,payload.args);
-    if(policy.toolDetails && !input) counters.unsupportedDetails++;
-    if (existing && payload.status === "denied") existing.denied = true;
-    if (!existing) state.calls.push({id: callId, name, executionId, ...(input ? {input} : {}), ...(payload.status === "denied" ? {denied: true as const} : {})});
+    const input = policy.toolDetails ? privateInput(name,payload.args) : undefined;
+    if (policy.toolDetails && input === undefined) counters.unsupportedDetails++;
+    const status = sourceId(payload.status);
+    state.calls.push({id:callId, name, executionId, ...(input ? {input} : {}), ...(status ? {status} : {})});
     if (state.calls.length > KIRO_LIMITS.callsPerSession) {state.calls.shift(); counters.callsEvicted++;}
   } else if (kind === "tool_result") {
     const callId = sourceId(payload.toolCallId);
     if (!callId) {counters.malformed++; return [];}
-    const index = state.calls.findIndex(call => call.id === callId);
-    const call = index >= 0 ? state.calls[index] : undefined;
-    if (call && call.executionId !== executionId) throw new KiroSourceConflictError();
-    attrs.call_id = callId;
-    if (typeof payload.success === "boolean") attrs.success = payload.success;
-    if (call) {
-      if (call.denied && payload.success === true) throw new KiroSourceConflictError();
-      if (call.denied) attrs.decision = "deny";
-      attrs.tool_name = call.name;
-      if(policy.toolDetails && call.input){
-        let verified:string|undefined;
-        try {verified=verifiedEncodedInput(call.name,JSON.parse(call.input));}catch { /* Older truncated inputs remain unreadable details. */ }
-        if(verified) attrs.tool_input=verified;else counters.unsupportedDetails++;
-      }
-      state.calls.splice(index, 1);
-    } else counters.missingCalls++;
-    logs = log("tool_result");
+    source.toolCallId = callId;
+    if (typeof payload.success === "boolean") source.success = payload.success;
   } else if (kind === "usage_summary") {
     if (!executionId || !Array.isArray(payload.promptTurnSummaries) || payload.promptTurnSummaries.length > 16) {counters.malformed++; return [];}
-    const credits = payload.promptTurnSummaries.map(object).filter(item => item?.unit === "credit");
-    if (!credits.length || credits.some(item => typeof item!.usage !== "number" || !Number.isFinite(item!.usage) || (item!.usage as number) < 0)) {counters.malformed++; return [];}
-    const amount = credits.reduce((total, item) => total + (item!.usage as number), 0);
-    if (!Number.isFinite(amount) || amount > 1_000_000) {counters.malformed++; return [];}
-    attrs.request_id = id; attrs["usage.provider"] = "kiro"; attrs["usage.unit"] = "credit"; attrs["usage.amount"] = amount;
-    if (typeof payload.elapsedTime === "number" && Number.isInteger(payload.elapsedTime) && payload.elapsedTime >= 0 && payload.elapsedTime <= 86_400_000) attrs["turn.elapsed_ms"] = payload.elapsedTime;
-    attrs["turn.status"] = ["success", "failure", "cancelled"].includes(String(payload.status)) ? String(payload.status) : "unknown";
-    logs = log("provider_turn_usage");
+    // Copy only the documented scalar fields. Aggregation and status meaning
+    // are private service responsibilities.
+    source.promptTurnSummaries = payload.promptTurnSummaries.map(value => {
+      const item = object(value);
+      return {...(sourceId(item?.unit) ? {unit:item!.unit} : {}), ...(typeof item?.usage === "number" && Number.isFinite(item.usage) ? {usage:item.usage} : {})};
+    });
+    if (typeof payload.elapsedTime === "number" && Number.isFinite(payload.elapsedTime)) source.elapsedTime = payload.elapsedTime;
+    if (sourceId(payload.status)) source.status = payload.status;
   } else {
     if (!executionId) {counters.malformed++; return [];}
-    attrs.request_id = id;
-    attrs["turn.stop_reason"] = ["end_turn", "cancelled", "error"].includes(String(payload.stopReason)) ? String(payload.stopReason) : "unknown";
-    attrs["turn.status"] = "unknown";
-    logs = log("turn_completion");
+    if (sourceId(payload.stopReason)) source.stopReason = payload.stopReason;
   }
-  state.seen.push([identity, digest]);
+  const context = kind === "tool_result" ? state.calls.map(call => {
+    // Recheck persisted fields against the active policy, including checkpoints
+    // written by the earlier binary. No unknown checkpoint fields are exported.
+    let input: string | undefined;
+    if (policy.toolDetails && call.input) {
+      try {input = privateInput(call.name,JSON.parse(call.input));} catch { /* Withhold unsafe old input. */ }
+      if (input === undefined) counters.unsupportedDetails++;
+    }
+    return {id:sourceId(call.id), name:sourceId(call.name), executionId:sourceId(call.executionId),
+      ...(input ? {input} : {}), ...(sourceId(call.status) ? {status:call.status} : call.denied ? {status:"denied"} : {})};
+  }) : undefined;
+  // Delivery context can retire once it is included with its referring source
+  // record. The staged checkpoint commits only after the envelope is accepted;
+  // interpretation of the full context remains the service's responsibility.
+  if (kind === "tool_result") state.calls = state.calls.filter(call => call.id !== source.toolCallId);
+  state.seen.push([identity,digest]);
   if (state.seen.length > KIRO_LIMITS.replayEntriesPerSession) state.seen.shift();
-  return logs;
+  if (kind === "tool_call") return [];
+  return [{timeUnixNano:nano, attributes:{"session.id":sessionId, "source.event.id":id,
+    "event.name":"kiro.source_record", "kiro.source.version":1,
+    "kiro.source.record":JSON.stringify({payload:source, ...(context ? {context} : {})})}}];
 }

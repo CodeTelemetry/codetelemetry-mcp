@@ -47,7 +47,7 @@ test("append/partial lines and restart preserve exact spool bytes/key and acknow
     await collector.tick(); now += 1000; await collector.tick();
     assert.equal(requests.length, 3);
     const events = requests.flatMap(request => JSON.parse(request.body).resourceLogs[0].scopeLogs[0].logRecords);
-    assert.equal(events.filter((event: any) => event.attributes.some((a: any) => a.key === "prompt.id" && a.value.stringValue === "prompt-partial")).length, 1);
+    assert.equal(events.filter((event: any) => event.attributes.some((a: any) => a.key === "source.event.id" && a.value.stringValue === "prompt-partial")).length, 1);
   } finally {await collector.close(); await fs.rm(f.root, {recursive: true, force: true});}
 });
 

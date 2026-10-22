@@ -15,15 +15,26 @@ export function kiroTransport(opts: {endpoint: string; key: string; fetchImpl?: 
   const fetchImpl = opts.fetchImpl ?? fetch;
   return async (body, idempotencyKey) => {
     if (Buffer.byteLength(body) > KIRO_LIMITS.envelopeBytes || !/^[a-f0-9-]{36}$/.test(idempotencyKey)) throw new Error("invalid Kiro retry envelope");
+    // Existing canonical pending envelopes retry without acquiring a new protocol.
+    let sourceEnvelope = false;
+    try {
+      const document = JSON.parse(body);
+      sourceEnvelope = Array.isArray(document?.resourceLogs) && document.resourceLogs.some((r: any) =>
+        Array.isArray(r?.scopeLogs) && r.scopeLogs.some((s: any) => Array.isArray(s?.logRecords) && s.logRecords.some((row: any) =>
+          Array.isArray(row?.attributes) && row.attributes.some((a: any) => a?.key === "event.name" && a.value?.stringValue === "kiro.source_record"))));
+    } catch {return "rejected";}
+    const sourceHeader = "x-codetelemetry-source-format";
+    const sourceFormat = "kiro-v3-source-v1";
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), KIRO_LIMITS.requestMs);
     try {
       const response = await fetchImpl(url.toString(), {method: "POST", body,
-        headers: {"content-type": "application/json", authorization: `Bearer ${key}`, "x-code-telemetry-idempotency-key": idempotencyKey},
+        headers: {"content-type": "application/json", authorization: `Bearer ${key}`, "x-code-telemetry-idempotency-key": idempotencyKey, ...(sourceEnvelope ? {[sourceHeader]:sourceFormat} : {})},
         signal: controller.signal, redirect: "error"});
       if (response.status === 401 || response.status === 403) {await response.body?.cancel(); return "auth";}
       if (response.status === 402) {await response.body?.cancel(); return "budget";}
       if (response.status >= 200 && response.status < 300) {
+        if (sourceEnvelope && response.headers.get(sourceHeader) !== sourceFormat) {await response.body?.cancel(); return "rejected";}
         let bytes = 0;
         const chunks: Uint8Array[] = [];
         const reader = response.body?.getReader();
