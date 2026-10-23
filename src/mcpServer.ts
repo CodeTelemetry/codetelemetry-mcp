@@ -4,7 +4,7 @@
 //
 // `tools/list` serves the MANIFEST verbatim (manifest.ts), so the inventory a
 // client discovers, the inventory CI hashes, and the inventory the committed
-// tool-manifest.json records are the same object by construction.
+// tool-manifest.json records are the same object by construction (ELL-47).
 //
 // Capabilities declare `tools` WITHOUT `listChanged`: the registry is fixed for a
 // process's lifetime, so there is no notification to send. A client learns about
@@ -56,7 +56,7 @@ export function buildServer(ctx: ToolContext): Server {
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const result = await callTool(req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>, ctx);
-    // These responses are projection-derived but duplicated as text
+    // ELL-198/200/272 responses are projection-derived but duplicated as text
     // and structured content by MCP, so keep their complete envelopes bounded.
     if (["interpret_session", "read_session_events", "compare_sessions", "plan_next_session"].includes(req.params.name)) return boundedToolResponse(result);
     return {

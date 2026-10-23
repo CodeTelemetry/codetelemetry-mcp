@@ -412,3 +412,13 @@ export function readCodexSummary(configPath: string): { exists: boolean; otelKey
     .filter((k): k is string => k !== null);
   return { exists: true, otelKeys, hasKey: /Bearer\s+cot_/.test(exporterKeyText(raw)) };
 }
+
+/** Whether the ACTIVE [otel] section opts in to prompt text
+ *  (`log_user_prompt = true`) — the Codex twin of OTEL_LOG_USER_PROMPTS, read by
+ *  `import --content live` so a history import never exports more than live does. */
+export function readCodexLogUserPrompt(configPath: string): boolean {
+  if (!fs.existsSync(configPath)) return false;
+  return activeOtelLines(fs.readFileSync(configPath, "utf8")).some(
+    (l) => keyOf(l) === "log_user_prompt" && /=\s*true$/.test(stripComment(l).trimEnd()),
+  );
+}

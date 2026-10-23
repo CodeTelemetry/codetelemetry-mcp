@@ -162,3 +162,22 @@ export function readSettingsSummary(filePath: string): { exists: boolean; otelKe
   const hasKey = typeof env.OTEL_EXPORTER_OTLP_HEADERS === "string" && env.OTEL_EXPORTER_OTLP_HEADERS.includes("cot_");
   return { exists: true, otelKeys, hasKey };
 }
+
+function readEnvBlock(filePath: string): Record<string, unknown> | null {
+  if (!fs.existsSync(filePath)) return null;
+  try {
+    const obj = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    const env = obj?.env;
+    return env && typeof env === "object" && !Array.isArray(env) ? (env as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Which content opt-ins the live Claude Code exporter has (the flags
+ *  `--enrich` writes). Read by `import --content live`. */
+export function readClaudeContentFlags(filePath: string): { prompts: boolean; toolDetails: boolean } {
+  const env = readEnvBlock(filePath) ?? {};
+  const on = (k: string) => env[k] === "1" || env[k] === "true";
+  return { prompts: on("OTEL_LOG_USER_PROMPTS"), toolDetails: on("OTEL_LOG_TOOL_DETAILS") };
+}

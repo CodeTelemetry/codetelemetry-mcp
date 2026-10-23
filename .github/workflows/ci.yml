@@ -27,11 +27,18 @@ jobs:
         run: |
           set -euo pipefail
           npm pack --silent --pack-destination "$RUNNER_TEMP" >/dev/null
-          TARBALL=$(find "$RUNNER_TEMP" -maxdepth 1 -name '*.tgz' -print -quit)
-          test -n "$TARBALL"
+          TARBALL="$RUNNER_TEMP/codetelemetry-mcp-$(node -p 'require("./package.json").version').tgz"
+          (cd packages/connect && npm pack --silent --pack-destination "$RUNNER_TEMP" >/dev/null)
+          CONNECT="$RUNNER_TEMP/codetelemetry-connect-$(node -p 'require("./packages/connect/package.json").version').tgz"
+          test -f "$TARBALL" && test -f "$CONNECT"
+          echo "connect=$CONNECT" >> "$GITHUB_OUTPUT"
           echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
       - name: Enforce the public package boundary
-        run: npm run audit:package -- "${{ steps.pack.outputs.tarball }}"
+        run: |
+          npm run audit:package -- "${{ steps.pack.outputs.tarball }}"
+          npm run audit:package -- --connect "${{ steps.pack.outputs.connect }}"
+      - name: Verify installed Connect and owned Kiro runtime
+        run: CODETELEMETRY_TEST_TARBALL="${{ steps.pack.outputs.tarball }}" CODETELEMETRY_CONNECT_TEST_TARBALL="${{ steps.pack.outputs.connect }}" npm run test:client-packaged
       - name: Verify source and packaged registries
         run: npm run verify:registry -- --packaged --tarball="${{ steps.pack.outputs.tarball }}"
       - name: Install as a customer and check production discovery

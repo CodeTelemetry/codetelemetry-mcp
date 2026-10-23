@@ -24,12 +24,17 @@ jobs:
     outputs:
       tarball: ${{ steps.pack.outputs.name }}
       version: ${{ steps.version.outputs.value }}
+      connect-tarball: ${{ steps.pack.outputs.connect }}
+      connect-version: ${{ steps.pack.outputs.connect-version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: npm
+      - name: Require the intended publication repository and branch
+        if: inputs.publish
+        run: test "${{ github.repository }}" = "CodeTelemetry/codetelemetry-mcp" && test "${{ github.ref }}" = "refs/heads/main"
       - run: npm ci
       - run: npm audit --omit=dev
       - run: npm test
@@ -47,16 +52,29 @@ jobs:
             exit 1
           fi
           npm run verify:publish-order
-      - name: Build one release candidate
+      - name: Build both exact release candidates
         id: pack
         run: |
           set -euo pipefail
           npm pack --silent --pack-destination "$RUNNER_TEMP" >/dev/null
-          TARBALL=$(find "$RUNNER_TEMP" -maxdepth 1 -name '*.tgz' -print -quit)
-          test -n "$TARBALL"
-          echo "name=$(basename "$TARBALL")" >> "$GITHUB_OUTPUT"
-      - name: Enforce the public package boundary
-        run: npm run audit:package -- "$RUNNER_TEMP/${{ steps.pack.outputs.name }}"
+          TARBALL="codetelemetry-mcp-$(node -p 'require("./package.json").version').tgz"
+          CONNECT_VERSION=$(node -p 'require("./packages/connect/package.json").version')
+          (cd packages/connect && npm pack --silent --pack-destination "$RUNNER_TEMP" >/dev/null)
+          CONNECT="codetelemetry-connect-${CONNECT_VERSION}.tgz"
+          test -f "$RUNNER_TEMP/$TARBALL" && test -f "$RUNNER_TEMP/$CONNECT"
+          echo "name=$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "connect=$CONNECT" >> "$GITHUB_OUTPUT"
+          echo "connect-version=$CONNECT_VERSION" >> "$GITHUB_OUTPUT"
+          (cd "$RUNNER_TEMP" && sha256sum "$TARBALL" "$CONNECT" > SHA256SUMS)
+      - name: Enforce both public package boundaries
+        run: |
+          npm run audit:package -- "$RUNNER_TEMP/${{ steps.pack.outputs.name }}"
+          npm run audit:package -- --connect "$RUNNER_TEMP/${{ steps.pack.outputs.connect }}"
+      - name: Refuse a Connect downgrade or duplicate
+        if: inputs.publish
+        run: node scripts/releaseArtifact.ts "$RUNNER_TEMP/${{ steps.pack.outputs.connect }}"
+      - name: Verify installed Connect and owned Kiro runtime
+        run: CODETELEMETRY_TEST_TARBALL="$RUNNER_TEMP/${{ steps.pack.outputs.name }}" CODETELEMETRY_CONNECT_TEST_TARBALL="$RUNNER_TEMP/${{ steps.pack.outputs.connect }}" npm run test:client-packaged
       - name: Verify source and packaged registries
         run: npm run verify:registry -- --packaged --tarball="$RUNNER_TEMP/${{ steps.pack.outputs.name }}"
       - name: Install as a customer and check production discovery
@@ -64,7 +82,10 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: npm-release-candidate
-          path: ${{ runner.temp }}/${{ steps.pack.outputs.name }}
+          path: |
+            ${{ runner.temp }}/${{ steps.pack.outputs.name }}
+            ${{ runner.temp }}/${{ steps.pack.outputs.connect }}
+            ${{ runner.temp }}/SHA256SUMS
           if-no-files-found: error
           retention-days: 7
 
@@ -82,6 +103,8 @@ jobs:
         with:
           name: npm-release-candidate
           path: ${{ runner.temp }}
+      - name: Verify retained artifact hashes
+        run: cd "$RUNNER_TEMP" && sha256sum --check SHA256SUMS
       - name: Require the least-privilege smoke credential
         env:
           SMOKE_KEY: ${{ secrets.CODETELEMETRY_SMOKE_INGEST_KEY }}
@@ -110,7 +133,7 @@ jobs:
 
   publish:
     needs: [verify, production-sanity]
-    if: inputs.publish
+    if: inputs.publish && github.repository == 'CodeTelemetry/codetelemetry-mcp' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: npm-production
     permissions:
@@ -136,6 +159,10 @@ jobs:
             echo "::error::npm ${version} cannot use trusted publishing; it needs 11.5.1 or later."
             exit 1
           fi
+      - name: Verify retained artifact hashes
+        run: cd "$RUNNER_TEMP" && sha256sum --check SHA256SUMS
+      - name: Publish standalone Connect before MCP
+        run: npm publish --access public --ignore-scripts "$RUNNER_TEMP/${{ needs.verify.outputs.connect-tarball }}"
       - name: Publish the verified artifact
         # npmjs.com trusts exactly this workflow (release.yml) in the npm-production
         # environment of this repository. npm adds provenance by itself once the
@@ -157,6 +184,16 @@ jobs:
         with:
           name: npm-release-candidate
           path: ${{ runner.temp }}
+      - name: Verify retained artifact hashes
+        run: cd "$RUNNER_TEMP" && sha256sum --check SHA256SUMS
+      - name: Verify both latest versions and exact artifact integrity
+        run: |
+          set -euo pipefail
+          for attempt in {1..12}; do
+            if node scripts/releaseArtifact.ts "$RUNNER_TEMP/${{ needs.verify.outputs.connect-tarball }}" --published && node scripts/releaseArtifact.ts "$RUNNER_TEMP/${{ needs.verify.outputs.tarball }}" --published; then exit 0; fi
+            if [ "$attempt" -lt 12 ]; then sleep 30; fi
+          done
+          exit 1
       - name: Verify npm serves the exact artifact as latest
         run: |
           set -uo pipefail
@@ -179,4 +216,13 @@ jobs:
           # publishing. npm trusts that list for five minutes, so npx would refuse
           # the new version (0.3.8's confirm failed this way twice).
           npm_config_cache: ${{ runner.temp }}/customer-npm-cache
-        run: npm run smoke -- --npx=${PACKAGE_NAME}@${{ needs.verify.outputs.version }} --endpoint https://codetelemetry.com
+        run: |
+          npm run smoke -- --npx=${PACKAGE_NAME}@${{ needs.verify.outputs.version }} --endpoint https://codetelemetry.com
+          npm run smoke -- --npx=${PACKAGE_NAME} --endpoint https://codetelemetry.com
+
+      - name: Verify standalone Connect customer launch paths
+        env:
+          npm_config_cache: ${{ runner.temp }}/connect-customer-npm-cache
+        run: |
+          npx --yes @codetelemetry/connect@${{ needs.verify.outputs.connect-version }} --help
+          npx --yes @codetelemetry/connect --help

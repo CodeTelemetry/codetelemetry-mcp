@@ -1,5 +1,5 @@
 // Endpoints + local paths, with env overrides so the same code drives prod,
-// another CodeTelemetry server, or a test backend.
+// a staging stack, or the in-process test backend.
 
 import os from "node:os";
 import path from "node:path";
@@ -26,19 +26,26 @@ export type Endpoints = {
   agentSessionSearchUrl: string;
   agentTaskSizeUrl: string;
   /** Size an existing Linear issue resolved through the tenant's own connected
-   *  workspace. */
+   *  workspace (ELL-44). */
   agentLinearIssueSizeUrl: string;
   /** Read a bounded, materialized interpretation of one personal coding session. */
   agentInterpretSessionUrl: string;
-  /** Read one personal coding session's recorded events. */
+  /** Read one personal coding session's recorded events (ELL-272). */
   agentReadSessionEventsUrl: string;
   /** Compare 2–10 current, materialized personal-session interpretations. */
   agentCompareSessionsUrl: string;
   /** Produce a bounded, read-only next-session recommendation from materialized precedents. */
   agentPlanNextSessionUrl: string;
+  /** Host health + capacity snapshot over the caller's agentd host-metrics feed
+   *  (ELL-19). The input the dispatch gate (ELL-24) admits or defers on. */
+  agentHostHealthUrl: string;
   /** The workspace's GitHub PR gate: its view, and changes to it. */
   agentGitHubGateUrl: string;
   agentGitHubGateConfigureUrl: string;
+  /** Weekly/daily counts of the caller's own phrases in their model replies (ELL-392). */
+  agentReplyPhrasesUrl: string;
+  /** Session-history import: which sessions are live / imported / resumable. */
+  agentImportStatusUrl: string;
 };
 
 const DEFAULT_API_BASE = "https://codetelemetry.com";
@@ -74,8 +81,11 @@ export function resolveEndpoints(overrides: Partial<{ apiBase: string; ingestEnd
     agentReadSessionEventsUrl: `${apiBase}/api/agent/read-session-events`,
     agentCompareSessionsUrl: `${apiBase}/api/agent/compare-sessions`,
     agentPlanNextSessionUrl: `${apiBase}/api/agent/plan-next-session`,
+    agentHostHealthUrl: `${apiBase}/api/agent/host-health`,
     agentGitHubGateUrl: `${apiBase}/api/agent/github-gate`,
     agentGitHubGateConfigureUrl: `${apiBase}/api/agent/github-gate/configure`,
+    agentReplyPhrasesUrl: `${apiBase}/api/agent/reply-phrases`,
+    agentImportStatusUrl: `${apiBase}/api/agent/import-status`,
   };
 }
 
