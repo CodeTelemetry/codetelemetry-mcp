@@ -19,21 +19,33 @@ workflow.
 
 ## Release preparation
 
-1. Update `package.json` and `src/version.ts` together.
+1. Update MCP `package.json` and `src/version.ts` together, and the standalone
+   Connect version in `packages/connect/package.json`. Both versions must be
+   unpublished and ahead of their package’s current `latest`.
 2. If the tool inventory changed, run `npm run manifest:write` and review it.
 3. Open a pull request and wait for CI to pass.
 4. Add `CODETELEMETRY_SMOKE_INGEST_KEY` as a repository secret. Publishing
-   needs no npm token: the package's trusted publisher on npmjs.com
+   needs no npm token: configure **both packages’** trusted publishers on npmjs.com
    (Settings → Trusted publishing) is GitHub Actions, `CodeTelemetry` /
    `codetelemetry-mcp`, workflow `release.yml`, environment `npm-production`,
    with `npm publish` among the allowed actions. The `publish` job exchanges its
    GitHub OIDC token for a short-lived, package-scoped publish token.
-5. Run the **release** workflow with `publish=false`. This builds one tarball,
-   audits it, installs it as a customer would, and runs the authenticated,
-   bounded, read-only smoke against `https://codetelemetry.com`.
-6. Review that run and the uploaded tarball, then run the same workflow with
-   `publish=true`. Publication remains manual and uses the already-audited
-   artifact.
+5. Run **release** with `publish=false` at the intended commit. Each run retains
+   both tarballs plus `SHA256SUMS`, audits both file boundaries, installs those
+   exact candidates, and runs the authenticated read-only production smoke.
+6. After merging the stacked preparation PRs, dispatch `publish=true` from
+   `CodeTelemetry/codetelemetry-mcp` **main** at the intended commit. That run
+   builds and verifies its own candidates before the existing `npm-production`
+   reviewer gate. No token or environment approval is bypassed.
+7. Publish standalone Connect before MCP. Downstream jobs check retained hashes;
+   confirmation checks both npm `latest` tags and exact SHA-512 tarball integrity,
+   then launches pinned and unpinned customer commands with fresh npm caches.
+
+The two npm publications are not atomic. If one publishes and the next fails,
+retain the run’s artifacts and diagnose the failed stage before retrying. An
+ordinary fresh run intentionally refuses already-published versions; do not
+change npm security settings or silently republish/rebuild an immutable version.
+Coordinate a recovery using the retained candidate or an explicit forward bump.
 
 ## Source ownership
 

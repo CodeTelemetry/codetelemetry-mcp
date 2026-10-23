@@ -20,18 +20,20 @@ test("installed Connect and Kiro service use only the public client artifact", {
   const wrapper = fileURLToPath(new URL("../packages/connect", import.meta.url));
   const wrapperMeta = JSON.parse(fs.readFileSync(path.join(wrapper, "package.json"), "utf8"));
   assert.equal(wrapperMeta.dependencies, undefined, "Connect must not pull in the MCP SDK");
-  const packed = JSON.parse(runNpm(["pack", "--json", "--pack-destination", root], wrapper))[0];
+  const suppliedConnect = process.env.CODETELEMETRY_CONNECT_TEST_TARBALL;
+  const packed = suppliedConnect ? JSON.parse(runNpm(["pack", suppliedConnect, "--dry-run", "--json", "--ignore-scripts"], root))[0] : JSON.parse(runNpm(["pack", "--json", "--pack-destination", root], wrapper))[0];
+  const connectTarball = suppliedConnect ?? path.join(root, packed.filename);
   const clientFiles = PUBLIC_MODULES.filter(name => name.startsWith("src/client/")).flatMap(name => {
     const relative = name.slice("src/client/".length); return [`dist/${relative}.js`, `dist/${relative}.d.ts`];
   });
   assert.deepEqual(packed.files.map((entry: {path: string}) => entry.path).sort(),
     ["LICENSE", "README.md", "package.json", ...clientFiles].sort());
   const connectUnpack = path.join(root, "connect-unpack"); fs.mkdirSync(connectUnpack);
-  const connectPackage = extractTarball(path.join(root, packed.filename), connectUnpack);
+  const connectPackage = extractTarball(connectTarball, connectUnpack);
   for (const file of clientFiles) assert.deepEqual(fs.readFileSync(path.join(connectPackage, file)),
     fs.readFileSync(path.join(pkg, file.replace("dist/", "dist/src/client/"))), `${file} is built from the same public source`);
   const customer = path.join(root, "customer"); fs.mkdirSync(customer);
-  runNpm(["install", "--ignore-scripts", "--no-package-lock", path.join(root, packed.filename)], customer);
+  runNpm(["install", "--ignore-scripts", "--no-package-lock", connectTarball], customer);
   assert.equal(fs.existsSync(path.join(customer, "node_modules/@modelcontextprotocol")), false);
   const cli = path.join(customer, "node_modules/@codetelemetry/connect/dist/bin.js");
   const config = execFileSync(process.execPath, [cli, "print-config"], {encoding: "utf8", timeout: 10_000});

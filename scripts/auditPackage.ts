@@ -4,6 +4,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import {fileURLToPath} from "node:url";
 import {
   extractTarball,
   makeTempDir,
@@ -49,13 +50,20 @@ function filesBelow(root: string): string[] {
   return found.sort();
 }
 
-function audit(pkgDir: string): string[] {
+export function audit(pkgDir: string, connect = false): string[] {
+  const allowed = connect ? new Set([
+    "LICENSE", "README.md", "package.json",
+    ...PUBLIC_MODULES.filter(name => name.startsWith("src/client/")).flatMap(name => {
+      const relative = name.slice("src/client/".length);
+      return [`dist/${relative}.js`, `dist/${relative}.d.ts`];
+    }),
+  ]) : ALLOWED;
   const problems: string[] = [];
   const files = filesBelow(pkgDir);
   for (const file of files) {
-    if (!ALLOWED.has(file)) problems.push(`unexpected file: ${file}`);
+    if (!allowed.has(file)) problems.push(`unexpected file: ${file}`);
   }
-  for (const expected of ALLOWED) {
+  for (const expected of allowed) {
     if (!files.includes(expected)) problems.push(`missing required file: ${expected}`);
   }
   for (const file of files) {
@@ -71,19 +79,24 @@ function audit(pkgDir: string): string[] {
   return problems;
 }
 
-const work = makeTempDir("ct-mcp-audit-");
-try {
-  const requested = process.argv[2];
-  const tarball = requested ? path.resolve(requested) : packLocal(work);
-  const pkgDir = extractTarball(tarball, work);
-  const problems = audit(pkgDir);
-  if (problems.length) {
-    process.stderr.write(`\nPackage audit failed (${problems.length}):\n`);
-    for (const problem of problems) process.stderr.write(`  - ${problem}\n`);
-    process.exitCode = 1;
-  } else {
-    process.stdout.write(`Package audit passed: ${ALLOWED.size} allowlisted files; no credential-shaped values or private-module references.\n`);
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const work = makeTempDir("ct-mcp-audit-");
+  try {
+    const connect = process.argv.includes("--connect");
+    const requested = process.argv.slice(2).find(arg => arg !== "--connect");
+    if (connect && !requested) throw new Error("Connect audit requires an exact tarball");
+    const tarball = requested ? path.resolve(requested) : packLocal(work);
+    const pkgDir = extractTarball(tarball, work);
+    const problems = audit(pkgDir, connect);
+    if (problems.length) {
+      process.stderr.write(`\nPackage audit failed (${problems.length}):\n`);
+      for (const problem of problems) process.stderr.write(`  - ${problem}\n`);
+      process.exitCode = 1;
+    } else {
+      process.stdout.write(`Package audit passed: explicit allowlisted files; no credential-shaped values or private-module references.\n`);
+    }
+  } finally {
+    removeDir(work);
   }
-} finally {
-  removeDir(work);
+
 }
