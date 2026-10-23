@@ -34,6 +34,7 @@ function startMock(): Promise<{
             scope: "personal",
             report: {
               sessionId: "session-a",
+              ...(body.service === undefined ? {} : {service: body.service}),
               present: true,
               eventCount: 11,
               samples: [{
@@ -163,6 +164,25 @@ test("performance tools return bounded model-safe reports", async () => {
   } finally {
     await mock.close();
   }
+});
+
+test("session performance forwards a bounded source service and rejects invalid values before reading", async () => {
+  const mock = await startMock();
+  const ctx: ToolContext = {session: new OnboardingSession(), endpointsOverride: {apiBase: mock.base}};
+  ctx.session.setKey(KEY, "pasted");
+  try {
+    for (const service of [null, 12, "", "   ", "é".repeat(64) + "a", ...Array.from({length: 32}, (_, n) => `kiro${String.fromCharCode(n)}cli`)]) {
+      assert.equal((await callTool("get_session_performance", {sessionId: "session-a", service}, ctx)).error, "bad_input");
+    }
+    assert.equal(mock.requests.length, 0);
+    const result = await callTool("get_session_performance", {sessionId: "session-a", service: " kiro-cli ", includeFresh: true}, ctx);
+    assert.equal(result.ok, true);
+    assert.equal((result.report as any).service, "kiro-cli");
+    assert.equal(mock.requests[0]?.body.service, "kiro-cli");
+    const boundary = await callTool("get_session_performance", {sessionId: "session-a", service: "é".repeat(64)}, ctx);
+    assert.equal(boundary.ok, true);
+    assert.equal(mock.requests[1]?.body.service, "é".repeat(64));
+  } finally {await mock.close();}
 });
 
 test("performance tools require a session id", async () => {

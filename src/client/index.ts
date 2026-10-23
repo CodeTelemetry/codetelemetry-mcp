@@ -42,6 +42,7 @@ export {
 export {
   getCostSignal,
   getSessionPerformance,
+  normalizeSessionPerformanceService,
   findSimilarSessionErrors,
   searchCodingSessions,
   SESSION_SEARCH_REQUEST_TIMEOUT_MS,

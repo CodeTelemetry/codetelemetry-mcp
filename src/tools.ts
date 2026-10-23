@@ -17,6 +17,7 @@ import {
   verifyScope,
   getCostSignal,
   getSessionPerformance,
+  normalizeSessionPerformanceService,
   findSimilarSessionErrors,
   searchCodingSessions,
   SESSION_SEARCH_REQUEST_TIMEOUT_MS,
@@ -1112,6 +1113,7 @@ export const TOOLS: ToolDef[] = [
     description: "Run the same bounded session-timeline read used by the UI and report cache status, query phases, rows, bytes, and latency. Returns counts only, never prompts, commands, outputs, or other raw content. Personal-scope and ingest-key authenticated.",
     inputSchema: obj({
       sessionId: { type: "string", minLength: 1, maxLength: 200, description: "Session id to measure." },
+      service: { type: "string", minLength: 1, maxLength: 128, description: "Optional source service from the session link. Trimmed, at most 128 UTF-8 bytes, with no C0 controls." },
       includeFresh: { type: "boolean", description: "Also bypass the dashboard cache once to measure a fresh read (default false)." },
       cacheSamples: { type: "integer", minimum: 1, maximum: 3, description: "Number of real dashboard-cache reads to sample (default 2)." },
     }, ["sessionId"]),
@@ -1121,6 +1123,8 @@ export const TOOLS: ToolDef[] = [
       if (!sessionId || sessionId.length > 200) {
         return { ok: false, error: "bad_input", message: "sessionId must contain 1-200 characters" };
       }
+      const service = normalizeSessionPerformanceService(args.service);
+      if (service === null) return {ok: false, error: "bad_input", message: "service must contain 1-128 UTF-8 bytes without C0 controls"};
       if (args.includeFresh !== undefined && typeof args.includeFresh !== "boolean") {
         return { ok: false, error: "bad_input", message: "includeFresh must be a boolean" };
       }
@@ -1133,6 +1137,7 @@ export const TOOLS: ToolDef[] = [
         key: ctx.session.useKey(),
         url: endpointsFor(ctx).agentSessionPerformanceUrl,
         sessionId,
+        service,
         includeFresh: typeof args.includeFresh === "boolean" ? args.includeFresh : undefined,
         cacheSamples: typeof args.cacheSamples === "number" ? args.cacheSamples : undefined,
         fetchImpl: ctx.fetchImpl,

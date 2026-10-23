@@ -1,7 +1,7 @@
 {
   "serverName": "codetelemetry",
   "serverVersion": "0.3.11",
-  "registryHash": "6ff81e974a2abbfbbcdf9461dd7dc5ae72106ee601121b4bbaa232d1fb226c07",
+  "registryHash": "58875568633a91801e089d81face99066fd37ef9dc78816fd42d70015af888e1",
   "toolCount": 23,
   "tools": [
     {
@@ -640,6 +640,12 @@
             "minLength": 1,
             "maxLength": 200,
             "description": "Session id to measure."
+          },
+          "service": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Optional source service from the session link. Trimmed, at most 128 UTF-8 bytes, with no C0 controls."
           },
           "includeFresh": {
             "type": "boolean",

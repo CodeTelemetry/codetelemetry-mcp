@@ -547,3 +547,21 @@ function _hostHealthTypesMirrorTheWire(report: HostHealthReport) {
   const versions: [string, number] = [report.policyVersion, report.signalMaxAgeSec];
   return { identity, present, versions };
 }
+
+test("session performance client retains optional service without changing legacy requests", async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const fetchImpl = async (_url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)); bodies.push(body);
+    return new Response(JSON.stringify({report: {sessionId: "session-a", service: body.service, present: true}}), {status: 200});
+  };
+  const common = {key: KEY, url: "https://example.invalid/api/agent/session-performance", sessionId: "session-a", fetchImpl};
+  const result = await getSessionPerformance({...common, service: " kiro-cli "});
+  assert.equal(result.report?.service, "kiro-cli");
+  assert.equal(bodies[0]?.service, "kiro-cli");
+  await getSessionPerformance(common);
+  assert.equal(Object.hasOwn(bodies[1]!, "service"), false);
+  for (const service of ["", " ", "é".repeat(65), "kiro\ncli"]) {
+    assert.equal((await getSessionPerformance({...common, service})).error, "bad_input");
+  }
+  assert.equal(bodies.length, 2, "invalid services must not issue a request");
+});

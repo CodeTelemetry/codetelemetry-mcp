@@ -53,6 +53,7 @@ export type AgentReadPerformance = {
 
 export type SessionPerformanceReport = {
   sessionId: string;
+  service?: string;
   present: boolean;
   sessionCount: number;
   eventCount: number;
@@ -719,20 +720,31 @@ export async function getCostSignal(opts: {
 }
 
 /** Measure the bounded session timeline read, including the real dashboard cache. */
+export function normalizeSessionPerformanceService(value: unknown): string | undefined | null {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || /[\u0000-\u001f]/.test(value)) return null;
+  const service = value.trim();
+  return service && Buffer.byteLength(service, "utf8") <= 128 ? service : null;
+}
+
 export async function getSessionPerformance(opts: {
   key: string;
   url: string;
   sessionId: string;
+  service?: string;
   includeFresh?: boolean;
   cacheSamples?: number;
   fetchImpl?: FetchLike;
   timeoutMs?: number;
 }): Promise<SessionPerformanceResult> {
+  const service = normalizeSessionPerformanceService(opts.service);
+  if (service === null) return {ok: false, report: null, httpStatus: 0, error: "bad_input", message: "service must contain 1-128 UTF-8 bytes without C0 controls"};
   const result = await postAgent<{ report?: SessionPerformanceReport }>({
     ...opts,
     timeoutMs: opts.timeoutMs ?? 120_000,
     body: {
       sessionId: opts.sessionId,
+      ...(service === undefined ? {} : {service}),
       ...(opts.includeFresh === undefined ? {} : { includeFresh: opts.includeFresh }),
       ...(opts.cacheSamples === undefined ? {} : { cacheSamples: opts.cacheSamples }),
     },
