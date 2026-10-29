@@ -174,3 +174,5 @@ export {
 } from "./import/run.ts";
 export { resolveImportKey, resolveImportContent, parseContentFlag, parseWhen } from "./import/options.ts";
 export { NO_CONTENT, ALL_CONTENT, type ContentPolicy, type ImportSource } from "./import/model.ts";
+
+export { graderConfigRequest } from "./agent.ts";

@@ -104,6 +104,7 @@ async function startBackend(
   issueMode: IssueMode = "sized",
   searchMode: SearchMode = "available",
   planningMode: PlanningMode = "available",
+  graderMode: "available" | "absent" = "available",
 ) {
   const server = http.createServer((req, res) => {
     let raw = "";
@@ -113,6 +114,11 @@ async function startBackend(
       seen.push({ path: req.url ?? "", auth: req.headers.authorization, body });
       res.setHeader("content-type", "application/json");
       const performance = { totalMs: 11, queryMs: 9, readRows: 100, readBytes: 1_000 };
+      if (req.url === "/api/agent/grader") {
+        res.statusCode = graderMode === "available" ? 200 : 404;
+        res.end(JSON.stringify(graderMode === "available" ? { ok: true, config: { revision: "a".repeat(64), draft: { checks: [] }, totalChecks: 0, publishedVersion: 1 } } : { error: "not_found" }));
+        return;
+      }
       if ((req.url ?? "").includes("plan-next-session")) {
         if (planningMode === "absent") {
           res.statusCode = 404;
@@ -462,10 +468,10 @@ test("--require-auth probes the Linear sizing route even with no issue configure
     // It was probed, not skipped-without-asking.
     assert.deepEqual(
       seen.map((s) => s.path),
-      ["/api/agent/task-size", "/api/agent/plan-next-session", "/api/agent/session-search", "/api/agent/linear-issue-size"],
+      ["/api/agent/task-size", "/api/agent/plan-next-session", "/api/agent/session-search", "/api/agent/grader", "/api/agent/linear-issue-size"],
     );
     assert.equal(seen[2]!.body.limit, 1);
-    assert.equal(seen[3]!.body.reference, "SMOKE-0");
+    assert.equal(seen[4]!.body.reference, "SMOKE-0");
   } finally {
     await backend.close();
   }
@@ -538,6 +544,17 @@ test("--require-auth blocks publication while planning is disabled", { timeout: 
   } finally {
     await backend.close();
   }
+});
+
+test("--require-auth blocks release until the Grader backend is deployed", { timeout: 600_000 }, async () => {
+  const seen: Seen[] = [];
+  const backend = await startBackend(seen, "sized", "available", "available", "absent");
+  try {
+    const run = await runSmoke(["--packaged", "--endpoint", backend.url, "--require-auth", "--json"], { ...sanitizeEnvForSubprocess(), CODETELEMETRY_INGEST_KEY: KEY });
+    assert.equal(run.status, 1);
+    const report = JSON.parse(run.stdout);
+    assert.ok(report.problems.some((message: string) => message.includes("get_grader_config")));
+  } finally { await backend.close(); }
 });
 
 test("--require-auth refuses a discovery-only run", { timeout: 600_000 }, async () => {
@@ -792,6 +809,7 @@ test("the release smoke packs, launches and verifies the artifact a customer ins
       "/api/agent/task-size",
       "/api/agent/plan-next-session",
       "/api/agent/session-search",
+      "/api/agent/grader",
       "/api/agent/linear-issue-size",
     ]);
     for (const call of seen) {
@@ -803,6 +821,8 @@ test("the release smoke packs, launches and verifies the artifact a customer ins
         assert.equal(call.body.limit, 1);
       } else if (call.path === "/api/agent/plan-next-session") {
         assert.match(String(call.body.taskText), /bounded authenticated planning release smoke/);
+      } else if (call.path === "/api/agent/grader") {
+        assert.deepEqual(call.body, { limit: 1 });
       } else if (call.path === "/api/agent/task-size") {
         // The plan estimate reads at most 20 sessions from the last day.
         assert.equal(call.body.lookbackDays, 1);
@@ -813,7 +833,7 @@ test("the release smoke packs, launches and verifies the artifact a customer ins
       }
     }
     assert.match(String(seen[0]!.body.taskText), /CodeTelemetry MCP release smoke/);
-    assert.equal(seen[3]!.body.reference, "ELL-44");
+    assert.equal(seen[4]!.body.reference, "ELL-44");
   } finally {
     await backend.close();
   }

@@ -6,6 +6,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -206,4 +208,22 @@ test("MCP protocol: estimate_linear_issue sizes a connected issue, and disambigu
     await client.close();
     await new Promise<void>((r) => backend.close(() => r()));
   }
+});
+
+test("MCP protocol: a wide Grader seed remains useful inside the complete response budget", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ct-grader-protocol-"));
+  fs.writeFileSync(path.join(root, "AGENTS.md"), '\\"漢字\n'.repeat(2000));
+  fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ scripts: Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`test:${i}`, "node --test"])) }));
+  const server = buildServer({ session: new OnboardingSession() });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "grader-budget", version: "0.0.0" });
+  await Promise.all([server.connect(st), client.connect(ct)]);
+  try {
+    const response: any = await client.callTool({ name: "seed_grader_config", arguments: { repositoryPath: root, features: "漢".repeat(4000) } });
+    assert.equal(response.isError, false);
+    assert.equal(response.structuredContent.seed.truncated, true);
+    assert.ok(response.structuredContent.seed.candidates.length > 0);
+    assert.ok(response.structuredContent.seed.sources.length > 0);
+    assert.ok(Buffer.byteLength(JSON.stringify(response)) < 64 * 1024 - 512);
+  } finally { await client.close(); fs.rmSync(root, { recursive: true, force: true }); }
 });

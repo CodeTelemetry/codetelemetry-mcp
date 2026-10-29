@@ -49,6 +49,7 @@ test("installed Connect and Kiro service use only the public client artifact", {
     const result = await client.listTools();
     assert.ok(result.tools.some(tool => tool.name === "import_history"));
     assert.ok(result.tools.some(tool => tool.name === "onboard"));
+    for (const name of ["seed_grader_config", "get_grader_config", "update_grader_config"]) assert.ok(result.tools.some(tool => tool.name === name), `installed MCP advertises ${name}`);
   } finally { await client.close(); }
   // The stable runtime must survive npm cache eviction and must not copy MCP or backend modules.
   const smoke = path.join(customer, "service.mjs");
