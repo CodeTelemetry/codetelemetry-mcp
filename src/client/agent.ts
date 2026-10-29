@@ -1286,3 +1286,41 @@ export async function planNextSession(opts: {
   });
   return { ok: result.ok, value: result.value ?? null, httpStatus: result.httpStatus, error: result.error, message: result.message };
 }
+
+/** Grader draft configuration. A write is never retried automatically: a timeout
+ * may have committed, so the caller must read the revision before retrying. */
+export async function graderConfigRequest(opts: {
+  key: string;
+  url: string;
+  body: Record<string, unknown>;
+  fetchImpl?: FetchLike;
+}) {
+  const key = assertKey(opts.key);
+  const response = await (opts.fetchImpl ?? fetch)(opts.url, {
+    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+    body: JSON.stringify(opts.body), signal: AbortSignal.timeout(10_000),
+  });
+  // Bound transport bytes before JSON parsing, including untrusted proxy errors.
+  const reader = response.body?.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  if (reader) try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > 64 * 1024) throw new Error("Grader response exceeds 64 KiB");
+      chunks.push(chunk.value);
+    }
+  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+  let decoded: any;
+  try { decoded = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { decoded = null; }
+  const config = decoded?.config;
+  return {
+    ok: response.ok && decoded?.ok === true && !!config && typeof config === "object" && !Array.isArray(config),
+    config,
+    httpStatus: response.status,
+    error: typeof decoded?.error === "string" ? decoded.error : null,
+    message: typeof decoded?.message === "string" ? decoded.message : null,
+  };
+}

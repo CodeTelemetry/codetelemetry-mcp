@@ -31,7 +31,7 @@ deterministic (see [Releases & discovery](#releases--discovery)):
 ```json
 {
   "mcpServers": {
-    "codetelemetry": { "command": "npx", "args": ["-y", "--package=@codetelemetry/mcp@0.3.11", "codetelemetry-mcp"] }
+    "codetelemetry": { "command": "npx", "args": ["-y", "--package=@codetelemetry/mcp@0.3.12", "codetelemetry-mcp"] }
   }
 }
 ```
@@ -63,6 +63,9 @@ Then just ask the agent: **"Connect me to CodeTelemetry."**
 | `estimate_task_size` | T-shirt size a proposed task (free-form text or a Linear-shaped issue) from the caller's own history. |
 | `estimate_plan` | T-shirt size a Claude Code / Codex **plan** (plain text or ordered steps) from the caller's own history. |
 | `estimate_linear_issue` | T-shirt size an **existing Linear issue** by URL or identifier, resolved through the workspace the user already connected. |
+| `seed_grader_config` | Inspect local agent instructions, selected skills, and project task files; return source text and command-check candidates for the user's requested grading focus. Reads files without running commands or uploading them. |
+| `get_grader_config` | Read a page of the workspace's Grader draft, its revision, and published version. |
+| `update_grader_config` | Add, update, or remove selected draft checks while preserving others. Records the user's requested instruction features and rejects stale revisions. Publish the draft on the Grader page to change scoring. |
 | `get_github_pr_gate` | Read the workspace's GitHub PR gate as its settings page shows it: the policy, trusted repositories, the GitHub Actions workflow file to commit, the check to require, outstanding steps, and recent decisions. |
 | `configure_github_pr_gate` | Set up or change the GitHub PR gate: trust repositories (`owner/repo` or `owner/*`), set the policy, enable it. Once the gate is on, a change that loosens it is refused (`requires_dashboard`) and the user makes it on the settings page. No GitHub token is involved: the workflow authenticates with GitHub's own OIDC token. |
 
@@ -75,6 +78,47 @@ commit `gate.actions.workflow.content` at `gate.actions.workflow.path` (a PR
 the user merges) → once it has run, the user requires
 `codetelemetry/validation` from GitHub Actions on the default branch (`howTo`
 gives the `gh api` ruleset command to run with their permission).
+
+## Seed and update the Grader
+
+Ask, for example: **"Use AGENTS.md and our security-review skill to grade unit
+tests, lint, and security-review skill invocation. Ignore the writing style rules."**
+
+The agent calls `seed_grader_config` with the repository directory and your
+`features` description. Discovery includes nested packages and repository skills
+under `.agents/skills`, `.claude/skills`, and `.codex/skills`. Additional user
+skills can be selected explicitly through `skillPaths`; your home directory is
+never scanned automatically.
+
+Command candidates come from npm/pnpm/yarn/bun scripts, Composer scripts,
+Make/Just/Rake targets, pytest/Ruff/mypy configuration, tox/nox, Go, Cargo,
+Maven/Gradle, .NET project files, Swift, Mix, and CMake test configuration.
+Declared tasks and inferred conventions are labelled separately. Discovery is
+bounded, skips dependency/generated/hidden directories, does not follow links,
+and reports truncation or unreadable sources. Narrow the repository directory
+when a large monorepo hits the limits. No task is executed.
+
+The calling agent uses your description to select relevant checks and translate
+instruction features into observable command or tool-use matchers. It should
+explain prose requirements the deterministic Grader cannot establish. Invoking a
+skill can be checked; compliance with all its written guidance cannot be inferred
+from invocation alone. Review inferred commands and adapt local working-directory
+matchers if your sessions run at another path. Pass `repositoryId` from session
+metadata to scope checks to the recorded repository.
+
+The agent then reads `get_grader_config` (follow `nextOffset` for remaining checks)
+and sends selected `upsertChecks` and/or `removeCheckIds` to
+`update_grader_config`, with `features` and the read's `revision` as
+`expectedRevision`. Existing checks are preserved unless named. A concurrent
+edit returns `conflict`; read again before retrying. An uncertain save must also
+be read back before retrying. Only selected check definitions and your feature
+description go to the server; source file text stays local to the MCP response.
+
+Changes appear as a draft at the [Grader page](https://codetelemetry.com/app/validation).
+Publish there to apply them to scoring. MCP tools do not publish a policy or
+rewrite historical scores. Remote configuration requires a backend implementing
+`POST /api/agent/grader` and `POST /api/agent/grader/configure`; older deployments
+return `not_supported` or `not_configured`. Local seeding works without a key.
 
 ## Organizations
 

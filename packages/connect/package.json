@@ -1,6 +1,6 @@
 {
   "name": "@codetelemetry/connect",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "CodeTelemetry local client and onboarding CLI",
   "type": "module",
   "license": "MIT",

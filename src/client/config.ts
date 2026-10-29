@@ -46,6 +46,8 @@ export type Endpoints = {
   agentReplyPhrasesUrl: string;
   /** Session-history import: which sessions are live / imported / resumable. */
   agentImportStatusUrl: string;
+  agentGraderUrl: string;
+  agentGraderConfigureUrl: string;
 };
 
 const DEFAULT_API_BASE = "https://codetelemetry.com";
@@ -86,6 +88,8 @@ export function resolveEndpoints(overrides: Partial<{ apiBase: string; ingestEnd
     agentGitHubGateConfigureUrl: `${apiBase}/api/agent/github-gate/configure`,
     agentReplyPhrasesUrl: `${apiBase}/api/agent/reply-phrases`,
     agentImportStatusUrl: `${apiBase}/api/agent/import-status`,
+    agentGraderUrl: `${apiBase}/api/agent/grader`,
+    agentGraderConfigureUrl: `${apiBase}/api/agent/grader/configure`,
   };
 }
 

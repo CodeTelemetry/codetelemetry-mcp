@@ -355,6 +355,13 @@ async function main(): Promise<number> {
           calls.push({ tool: "search_sessions", ok: false, error: String(search.error ?? "unknown") });
         }
 
+        const grader = await call("get_grader_config", { limit: 1 });
+        const config = grader.config as Record<string, any> | undefined;
+        if (!grader.ok || !config || !/^[a-f0-9]{64}$/.test(String(config.revision)) || !Array.isArray(config.draft?.checks) || config.draft.checks.length > 1 || !Number.isSafeInteger(config.totalChecks)) {
+          problems.push(`get_grader_config failed or has an incompatible draft contract: ${String(grader.error ?? "invalid_response")}`);
+          calls.push({ tool: "get_grader_config", ok: false, error: String(grader.error ?? "invalid_response") });
+        } else calls.push({ tool: "get_grader_config", ok: true, summary: { publishedVersion: config.publishedVersion, totalChecks: config.totalChecks } });
+
         // Without a configured issue there is nothing to size — but the ROUTE must
         // still be probed when this run is a gate, or a release could ship
         // estimate_linear_issue while /api/agent/linear-issue-size is absent or
@@ -431,7 +438,7 @@ async function main(): Promise<number> {
       } else {
         // Every backend route exercised by this gate must answer. A typed refusal
         // from the Linear route counts (the route answered); a skip does not.
-        for (const tool of ["estimate_plan", "search_sessions", "estimate_linear_issue", "plan_next_session"]) {
+        for (const tool of ["estimate_plan", "search_sessions", "estimate_linear_issue", "plan_next_session", "get_grader_config"]) {
           const outcome = calls.find((c) => c.tool === tool);
           if (!outcome) {
             problems.push(`--require-auth was given but ${tool} was never called against the endpoint`);

@@ -1,6 +1,6 @@
 {
   "name": "@codetelemetry/mcp",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "description": "CodeTelemetry MCP server \u2014 lets a coding agent onboard a user end to end: authenticate (device code), obtain an ingest key, write the Claude Code OTEL config, send a test event, and confirm telemetry landed \u2014 then search, read, interpret and compare the user's own coding sessions, plan the next one, and size tasks, plans and Linear issues from that history. The plaintext key never enters the model's context.",
   "type": "module",
   "license": "MIT",

@@ -27,6 +27,7 @@ test("registry exposes the documented tools with JSON-schema inputs", () => {
     "find_similar_session_errors",
     "get_cost_signal",
     "get_github_pr_gate",
+    "get_grader_config",
     "get_ingest_key",
     "get_session_performance",
     "import_history",
@@ -35,8 +36,10 @@ test("registry exposes the documented tools with JSON-schema inputs", () => {
     "plan_next_session",
     "read_session_events",
     "search_sessions",
+    "seed_grader_config",
     "send_test_event",
     "status",
+    "update_grader_config",
     "verify_telemetry",
     "write_local_config",
   ]);
@@ -265,7 +268,9 @@ test("tools that need a key fail cleanly before one is set", async () => {
   const ctx: ToolContext = { session: new OnboardingSession() };
   for (const name of [
     "write_local_config",
+    "seed_grader_config",
     "send_test_event",
+    "update_grader_config",
     "verify_telemetry",
     "get_session_performance",
     "find_similar_session_errors",

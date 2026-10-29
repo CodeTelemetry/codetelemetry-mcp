@@ -10,12 +10,18 @@ only:
 - compiled MCP transport and tool-registry modules;
 - local onboarding/configuration, privacy controls, history import and bounded Kiro collection;
 - CodeTelemetry HTTP clients, protocol contracts and plan input normalization;
+- bounded local instruction/skill and project-task discovery for Grader draft setup;
 - `package.json`, `README.md`, `LICENSE`, and `tool-manifest.json`.
 
 It must not contain tests, TypeScript sources, release scripts, fixtures,
 infrastructure code or backend implementations. `npm run audit:package --
 <tarball>` enforces that boundary on the exact tarball used by the release
 workflow.
+
+The Grader tools require deployed `/api/agent/grader` and `/api/agent/grader/configure`
+support before npm publication. The authenticated release smoke reads one draft
+check and refuses an absent/incompatible backend; it never changes or publishes
+a customer policy.
 
 ## Release preparation
 

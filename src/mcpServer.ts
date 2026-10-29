@@ -58,7 +58,7 @@ export function buildServer(ctx: ToolContext): Server {
     const result = await callTool(req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>, ctx);
     // ELL-198/200/272 responses are projection-derived but duplicated as text
     // and structured content by MCP, so keep their complete envelopes bounded.
-    if (["interpret_session", "read_session_events", "compare_sessions", "plan_next_session"].includes(req.params.name)) return boundedToolResponse(result);
+    if (["interpret_session", "read_session_events", "compare_sessions", "plan_next_session", "seed_grader_config", "get_grader_config", "update_grader_config"].includes(req.params.name)) return boundedToolResponse(result);
     return {
       content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       structuredContent: result,

@@ -8,6 +8,7 @@ export const PUBLIC_MODULES = [
   "src/tools",
   "src/version",
   "src/client/agent",
+  "src/client/graderSeed",
   "src/client/assistants",
   "src/client/clients",
   "src/client/codexConfig",
