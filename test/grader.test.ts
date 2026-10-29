@@ -151,3 +151,10 @@ test("Grader tools read/write only selected checks and retain typed failures and
   assert.match(String(uncertain.message), /Read the current draft before retrying/);
   assert.equal(attempts, 1, "uncertain writes are never retried automatically");
 });
+
+
+test("home and filesystem roots are not implicit project discovery scopes", () => {
+  for (const root of [os.homedir(), path.parse(os.homedir()).root]) {
+    assert.throws(() => seedGraderConfig({ root, features: "Tests" }), /Choose a project directory/);
+  }
+});

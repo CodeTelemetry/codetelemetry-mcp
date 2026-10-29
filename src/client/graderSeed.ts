@@ -2,6 +2,7 @@
 // a task file, evaluate a build system, or run a discovered command.
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { createHash } from "node:crypto";
 
 export type GraderMatcherNode =
@@ -81,6 +82,10 @@ const targetMatcher = (executable: string, target: string): GraderMatcherNode =>
 
 export function seedGraderConfig(options: { root: string; features: string; skillPaths?: string[]; repositoryId?: string }): GraderSeed {
   const root = fs.realpathSync(options.root);
+  // MCP hosts sometimes launch in HOME. That is not consent to discover
+  // global skill libraries; those files need explicit skillPaths selection.
+  const home = fs.realpathSync(os.homedir());
+  if (root === home || root === path.parse(root).root) throw new Error("Choose a project directory as repositoryPath; select global SKILL.md files explicitly with skillPaths.");
   if (!fs.statSync(root).isDirectory()) throw new Error("repositoryPath must be a directory");
   const result: GraderSeed = { features: options.features, sources: [], candidates: [], warnings: [], truncated: false };
   let entries = 0;
