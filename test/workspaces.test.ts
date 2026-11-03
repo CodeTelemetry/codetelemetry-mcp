@@ -135,6 +135,18 @@ test("contexts survive a fresh MCP session and bindings contain no credential", 
   bindWorkspace(repository, context);
   assert.equal(fs.statSync(contextPath(context.name)).mode & 0o777, 0o600);
   assert.equal(loadWorkspace(context.name).ingestKey, context.ingestKey);
+  await assert.rejects(
+    () =>
+      bootstrapWorkspace(
+        {
+          name: context.name,
+          organizationName: "Different organization",
+          repositoryPath: repository,
+        },
+        { apiBase: context.apiBase, fetchImpl },
+      ),
+    /context already exists/,
+  );
   assert.deepEqual(findWorkspaceBinding(repository)?.scope, scope);
   assert.ok(
     !fs
@@ -210,7 +222,10 @@ test("bootstrap pauses before config writes for funding and resumes publication 
     /interrupted/,
   );
   assert.equal(publications, 1);
-  const resumed = await bootstrapWorkspace({ name: context.name }, environment);
+  const resumed = await bootstrapWorkspace(
+    { name: context.name },
+    { fetchImpl },
+  );
   assert.equal(resumed.status, "ready");
   assert.equal(publications, 1);
   assert.equal(probes, 1);

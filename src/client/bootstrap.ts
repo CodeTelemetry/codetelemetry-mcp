@@ -253,8 +253,16 @@ export async function bootstrapWorkspace(
   delete options.reauthorize;
   const name = workspaceName(options.name),
     stateFile = path.join(workspaceHome(), `${name}.bootstrap.json`);
+  const savedOrigin = fs.existsSync(stateFile)
+    ? (readWorkspaceFile(stateFile) as State).apiBase
+    : fs.existsSync(contextPath(name))
+      ? loadWorkspace(name).apiBase
+      : undefined;
   const apiBase = workspaceOrigin(
-    environment.apiBase ?? resolveEndpoints().apiBase,
+    environment.apiBase ??
+      process.env.CODETELEMETRY_API_BASE ??
+      savedOrigin ??
+      resolveEndpoints().apiBase,
   );
   const release = workspaceLock(name),
     deadline =
@@ -289,6 +297,10 @@ export async function bootstrapWorkspace(
             "Bootstrap plan changed; use another context name for a different setup.",
           );
     } else {
+      if (options.organizationName && fs.existsSync(contextPath(name)))
+        throw new Error(
+          "This context already exists. Omit organizationName to configure it, or choose a new context name to create another organization.",
+        );
       const plan = validatePlan(options);
       state = {
         version: 1,
