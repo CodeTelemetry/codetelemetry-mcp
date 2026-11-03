@@ -6,7 +6,7 @@
 import { mask, keyHash, looksLikeKey } from "./client/keys.ts";
 import type { ExpectedKeyScope, KeyScope } from "./client/connectivity.ts";
 
-export type KeySource = "device-flow" | "pasted";
+export type KeySource = "device-flow" | "pasted" | "workspace";
 
 export class OnboardingSession {
   // The one place the plaintext exists. Intentionally #private so it can't be

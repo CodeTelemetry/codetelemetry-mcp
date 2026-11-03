@@ -7,6 +7,8 @@
 //  - Tools are small + individually callable for recovery; `onboard` chains them.
 //  - Errors are returned as { ok:false, error, message } (never thrown secrets).
 
+import { workspaceTools, restoreWorkspace } from "./workspaceRuntime.ts";
+import type { WorkspaceBinding } from "./client/workspaces.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -61,6 +63,9 @@ import { registryIdentity } from "./manifest.ts";
 
 export type ToolContext = {
   session: OnboardingSession;
+  workspace?: WorkspaceBinding;
+  workspaceInitialized?: boolean;
+  workspaceClient?: "claude"|"codex";
   /** Trusted host/test injection only. These values are never model-controlled. */
   endpointsOverride?: { apiBase?: string; ingestEndpoint?: string };
   /** Trusted host/test injection only. Public tools can write only recognized client paths. */
@@ -660,6 +665,7 @@ async function requestGrader(ctx: ToolContext, operation: "read" | "update" | "p
 }
 
 export const TOOLS: ToolDef[] = [
+  ...workspaceTools,
   {
     name: "authenticate",
     title: "Authenticate (device code)",
@@ -1937,7 +1943,21 @@ export async function callTool(name: string, args: Record<string, unknown>, ctx:
   const tool = TOOLS_BY_NAME[name];
   if (!tool) return { ok: false, error: "unknown_tool", message: `No tool named ${name}.` };
   try {
-    const result = await tool.handler(args ?? {}, ctx);
+    if (!["workspace_context", "bootstrap_workspace"].includes(name)) await restoreWorkspace(ctx);
+    if (ctx.workspace && !["status", "workspace_context", "bootstrap_workspace", "seed_grader_config", "write_grader_config_artifact"].includes(name)) {
+      if (["onboard", "write_local_config"].includes(name)) throw new Error("Use bootstrap_workspace to configure this persistent workspace and its scoped client profile.");
+      if (["authenticate", "auth_status", "get_ingest_key"].includes(name)) throw new Error("A persistent workspace is selected. Use bootstrap_workspace to reconnect or workspace_context to select another context.");
+      const verified = await verifyScope({ key: ctx.session.useKey(), connectivityUrl: endpointsFor(ctx).connectivityUrl, expected: ctx.workspace.scope, fetchImpl: ctx.fetchImpl });
+      if (!["scope_verified", "budget_exhausted"].includes(verified.state)) throw new Error(`Workspace verification failed: ${verified.state}.`);
+    }
+    const delegate = ctx.workspace && !["workspace_context", "bootstrap_workspace"].includes(name) ? { ...ctx, fetchImpl: (async (url, init) => {
+      const headers = new Headers(init?.headers);
+      if (new URL(String(url)).origin === ctx.workspace!.apiBase) headers.set("x-codetelemetry-workspace", JSON.stringify(ctx.workspace!.scope));
+      return (ctx.fetchImpl ?? fetch)(url, { ...init, headers });
+    }) as FetchLike } : ctx;
+    if(ctx.workspaceClient && ["status","onboard","write_local_config"].includes(name) && args.client===undefined) args={...args,client:ctx.workspaceClient};
+    const result = await tool.handler(args ?? {}, delegate);
+    if (name === "status") result.workspace = ctx.workspace ?? null;
     return JSON.parse(scrub(JSON.stringify(result))) as ToolResult;
   } catch (err) {
     return { ok: false, error: "tool_error", message: scrub(String((err as Error).message ?? err)) };

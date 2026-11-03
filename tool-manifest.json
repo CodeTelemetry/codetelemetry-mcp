@@ -1,9 +1,132 @@
 {
   "serverName": "codetelemetry",
-  "serverVersion": "0.3.14",
-  "registryHash": "25972610377feb1c3c8f7dc7d4c107d96ee609adca3e52157ff709ba36749468",
-  "toolCount": 28,
+  "serverVersion": "0.4.0",
+  "registryHash": "6bfd22de2c81f7a7ef817af42b2c9f741dcbb085de4d79fc661d291b065dd3a0",
+  "toolCount": 30,
   "tools": [
+    {
+      "name": "bootstrap_workspace",
+      "title": "Create or resume a workspace setup",
+      "description": "Create/select an organization and finish repository-scoped setup using a persistent named context. The first call returns one browser approval URL; later calls with the same name resume the saved plan, verify funding and ingestion, optionally save/publish selected Grader checks and write Terraform. No credits or seats are purchased. Pass organizationName to create or organizationId to select. Existing contexts need neither. Each call is bounded; pending steps are explicit. Secrets stay local; unrelated global configurations are unchanged.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+          },
+          "repositoryPath": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 63
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          },
+          "organizationName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60
+          },
+          "organizationId": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "client": {
+            "type": "string",
+            "enum": [
+              "claude",
+              "codex"
+            ]
+          },
+          "configPath": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "features": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "checks": {
+            "type": "array",
+            "maxItems": 30,
+            "items": {
+              "type": "object"
+            }
+          },
+          "publish": {
+            "type": "boolean"
+          },
+          "terraform": {
+            "type": "boolean"
+          },
+          "githubRepository": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "reauthorize": {
+            "type": "boolean",
+            "description": "Replace an expired or revoked credential after fresh approval, preserving this exact account and organization."
+          },
+          "enrich": {
+            "type": "boolean"
+          },
+          "repositoryObservation": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "name": "workspace_context",
+      "title": "Manage persistent workspace contexts",
+      "description": "List, save or select a named CodeTelemetry workspace. Credentials stay in private local storage and survive MCP restarts. Repository bindings contain only verified account/organization metadata. Save the currently authenticated key, or use an existing context; repositoryPath binds that repository without changing global telemetry. A conflicting binding requires explicit removal before switching.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list",
+              "save",
+              "use"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+          },
+          "repositoryPath": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 63
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          }
+        }
+      }
+    },
     {
       "name": "authenticate",
       "title": "Authenticate (device code)",

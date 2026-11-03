@@ -176,3 +176,7 @@ export { resolveImportKey, resolveImportContent, parseContentFlag, parseWhen } f
 export { NO_CONTENT, ALL_CONTENT, type ContentPolicy, type ImportSource } from "./import/model.ts";
 
 export { graderConfigRequest } from "./agent.ts";
+
+export { loadWorkspace, saveWorkspace, listWorkspaces, bindWorkspace, findWorkspaceBinding, type WorkspaceContext, type WorkspaceBinding } from "./workspaces.ts";
+
+export { bootstrapWorkspace, type BootstrapOptions } from "./bootstrap.ts";
