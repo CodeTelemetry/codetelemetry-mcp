@@ -1287,7 +1287,7 @@ export async function planNextSession(opts: {
   return { ok: result.ok, value: result.value ?? null, httpStatus: result.httpStatus, error: result.error, message: result.message };
 }
 
-/** Grader draft configuration. A write is never retried automatically: a timeout
+/** Grader configuration and publication. A write is never retried automatically: a timeout
  * may have committed, so the caller must read the revision before retrying. */
 export async function graderConfigRequest(opts: {
   key: string;

@@ -171,3 +171,100 @@ test("home and filesystem roots are not implicit project discovery scopes", () =
     assert.throws(() => seedGraderConfig({ root, features: "Tests" }), /Choose a project directory/);
   }
 });
+
+test("IaC artifacts detect repository context, preserve literal inputs, and never call the service", async (t) => {
+  const f = fixture(t);
+  f.write("infra/main.tf", "# existing Terraform");
+  f.write("package.json", '{"scripts":{"test":"node --test"}}');
+  const checks = seedGraderConfig({ root: f.root, features: "Tests" }).candidates.map(c => c.check);
+  checks[0]!.description = 'Literal ${file("/etc/passwd")} and %{if true}';
+  let requests = 0;
+  const ctx: ToolContext = { session: new OnboardingSession(), fetchImpl: async () => { requests++; throw new Error("unexpected request"); } };
+  const args = { repositoryPath: f.root, features: 'Tests ${literal}', checks };
+  const result: any = await callTool("write_grader_config_artifact", args, ctx);
+  assert.equal(result.ok, true);
+  assert.equal(result.artifact.format, "terraform");
+  const json = JSON.parse(fs.readFileSync(result.artifact.path, "utf8"));
+  assert.equal(json.locals.codetelemetry_grader_requested_features, 'Tests $${literal}');
+  assert.match(json.resource.codetelemetry_grader_config.instructions.checks_json, /\$\$\{file/);
+  assert.match(json.resource.codetelemetry_grader_config.instructions.checks_json, /%%\{if/);
+  const previous = fs.readFileSync(result.artifact.path, "utf8");
+  assert.equal((await callTool("write_grader_config_artifact", args, ctx)).error, "artifact_exists");
+  assert.equal(fs.readFileSync(result.artifact.path, "utf8"), previous);
+  assert.equal(requests, 0);
+  assert.equal(fs.statSync(result.artifact.path).mode & 0o777, 0o600);
+
+  const p = fixture(t);
+  p.write("Pulumi.yaml", "runtime: python\nname: example\n");
+  const pulumi: any = await callTool("write_grader_config_artifact", { ...args, repositoryPath: p.root }, ctx);
+  assert.equal(pulumi.artifact.format, "pulumi");
+  const program = JSON.parse(fs.readFileSync(pulumi.artifact.path, "utf8"));
+  assert.equal(program.runtime, "yaml");
+  assert.equal(program.resources.grader.type, "codetelemetry:index/graderConfig:GraderConfig");
+  assert.match(program.resources.grader.properties.checksJson["fn::secret"], /\$\$\{file/);
+  assert.deepEqual(program.packages.codetelemetry.parameters, ["./bin/terraform-provider-codetelemetry"]);
+});
+
+test("IaC artifacts require unambiguous context and refuse unsafe destinations and invalid checks", async (t) => {
+  const f = fixture(t);
+  f.write("package.json", '{"scripts":{"test":"node --test"}}');
+  const checks = seedGraderConfig({ root: f.root, features: "Tests" }).candidates.map(c => c.check);
+  const ctx = { session: new OnboardingSession() };
+  const args = { repositoryPath: f.root, features: "Tests", checks };
+  assert.equal((await callTool("write_grader_config_artifact", args, ctx)).error, "artifact_failed");
+  f.write("main.tf", "# Terraform"); f.write("Pulumi.yaml", "runtime: nodejs");
+  assert.equal((await callTool("write_grader_config_artifact", args, ctx)).error, "artifact_failed");
+  for (const bad of [{ checks: [null] }, { checks: [checks[0], checks[0]] }, { format: "shell" }, { features: "" }, { outputPath: "/tmp/out.tf" }]) {
+    assert.equal((await callTool("write_grader_config_artifact", { ...args, ...bad }, ctx)).error, "bad_input");
+  }
+  fs.symlinkSync(path.join(f.root, "package.json"), path.join(f.root, "codetelemetry-grader.tf.json"));
+  assert.equal((await callTool("write_grader_config_artifact", { ...args, format: "terraform" }, ctx)).error, "artifact_exists");
+  assert.match(fs.readFileSync(path.join(f.root, "package.json"), "utf8"), /scripts/);
+  const credential = await callTool("write_grader_config_artifact", { ...args, format: "pulumi", features: "cot_" + "01234567890123456789" }, ctx);
+  assert.equal(credential.error, "artifact_failed");
+  assert.equal(fs.existsSync(path.join(f.root, "codetelemetry-grader.pulumi.yaml")), false);
+});
+
+test("publication completes setup without UI, validates exact revisions, and never retries uncertain writes", async () => {
+  const session = new OnboardingSession();
+  const requests: Array<{ url: string; body: unknown }> = [];
+  const publication = { published: true, policyId: "default", publishedVersion: 4, publishedAt: "2026-11-02T12:00:00.000Z", revision: "b".repeat(64), draftVersion: 5, totalChecks: 8 };
+  let reply: { status: number; body: unknown } = { status: 200, body: { ok: true, config: publication } };
+  const ctx: ToolContext = { session, endpointsOverride: { apiBase: "https://example.test" }, fetchImpl: async (url, init) => {
+    assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${key}`);
+    requests.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+    return new Response(JSON.stringify(reply.body), { status: reply.status });
+  } };
+  assert.equal((await callTool("publish_grader_config", { expectedRevision: "a".repeat(64) }, ctx)).error, "no_key");
+  const key = "cot_" + "publishgrader00000000000001";
+  session.setKey(key, "pasted");
+  const args = { expectedRevision: "a".repeat(64) };
+  const result = await callTool("publish_grader_config", args, ctx);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.config, publication);
+  assert.deepEqual(requests, [{ url: "https://example.test/api/agent/grader/publish", body: args }]);
+  assert.match(String(result.note), /Future evaluations/);
+  assert.ok(!JSON.stringify(result).includes(key));
+  for (const invalid of [{}, { expectedRevision: "bad" }, { ...args, publish: true }, { ...args, tenantId: "other" }]) {
+    assert.equal((await callTool("publish_grader_config", invalid, ctx)).error, "bad_input");
+  }
+  assert.equal(requests.length, 1);
+  for (const [status, body, error] of [
+    [409, { error: "conflict", message: "changed draft" }, "conflict"],
+    [401, {}, "unauthenticated"], [429, {}, "rate_limited"], [404, {}, "not_supported"],
+    [500, {}, "publish_uncertain"], [200, {}, "publish_uncertain"],
+    [200, { ok: true, config: {} }, "publish_uncertain"],
+    [200, { ok: true, config: { ...publication, revision: args.expectedRevision } }, "publish_uncertain"],
+  ] as const) {
+    reply = { status, body };
+    assert.equal((await callTool("publish_grader_config", args, ctx)).error, error);
+  }
+  let attempts = 0;
+  ctx.fetchImpl = async () => { attempts++; throw new Error("lost response after commit"); };
+  const uncertain = await callTool("publish_grader_config", args, ctx);
+  assert.equal(uncertain.error, "publish_uncertain");
+  assert.match(String(uncertain.message), /publishedVersion and revision/);
+  assert.equal(attempts, 1);
+  ctx.fetchImpl = async () => new Response("x".repeat(70 * 1024), { status: 200 });
+  assert.equal((await callTool("publish_grader_config", args, ctx)).error, "publish_uncertain");
+});

@@ -48,6 +48,8 @@ export type Endpoints = {
   agentImportStatusUrl: string;
   agentGraderUrl: string;
   agentGraderConfigureUrl: string;
+  /** Optional for consumers constructing older endpoint sets; the resolver supplies it. */
+  agentGraderPublishUrl?: string;
 };
 
 const DEFAULT_API_BASE = "https://codetelemetry.com";
@@ -90,6 +92,7 @@ export function resolveEndpoints(overrides: Partial<{ apiBase: string; ingestEnd
     agentImportStatusUrl: `${apiBase}/api/agent/import-status`,
     agentGraderUrl: `${apiBase}/api/agent/grader`,
     agentGraderConfigureUrl: `${apiBase}/api/agent/grader/configure`,
+    agentGraderPublishUrl: `${apiBase}/api/agent/grader/publish`,
   };
 }
 

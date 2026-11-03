@@ -9,6 +9,7 @@ export const PUBLIC_MODULES = [
   "src/version",
   "src/client/agent",
   "src/client/graderSeed",
+  "src/client/graderArtifact",
   "src/client/assistants",
   "src/client/clients",
   "src/client/codexConfig",
