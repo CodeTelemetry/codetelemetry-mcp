@@ -34,6 +34,7 @@ test("registry exposes the documented tools with JSON-schema inputs", () => {
     "interpret_session",
     "onboard",
     "plan_next_session",
+    "publish_grader_config",
     "read_session_events",
     "search_sessions",
     "seed_grader_config",
@@ -41,6 +42,7 @@ test("registry exposes the documented tools with JSON-schema inputs", () => {
     "status",
     "update_grader_config",
     "verify_telemetry",
+    "write_grader_config_artifact",
     "write_local_config",
   ]);
   for (const t of TOOLS) {

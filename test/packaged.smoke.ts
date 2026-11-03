@@ -104,7 +104,7 @@ async function startBackend(
   issueMode: IssueMode = "sized",
   searchMode: SearchMode = "available",
   planningMode: PlanningMode = "available",
-  graderMode: "available" | "absent" = "available",
+  graderMode: "available" | "absent" | "draft-only" = "available",
 ) {
   const server = http.createServer((req, res) => {
     let raw = "";
@@ -115,8 +115,8 @@ async function startBackend(
       res.setHeader("content-type", "application/json");
       const performance = { totalMs: 11, queryMs: 9, readRows: 100, readBytes: 1_000 };
       if (req.url === "/api/agent/grader") {
-        res.statusCode = graderMode === "available" ? 200 : 404;
-        res.end(JSON.stringify(graderMode === "available" ? { ok: true, config: { revision: "a".repeat(64), draft: { checks: [] }, totalChecks: 0, publishedVersion: 1 } } : { error: "not_found" }));
+        res.statusCode = graderMode !== "absent" ? 200 : 404;
+        res.end(JSON.stringify(graderMode !== "absent" ? { ok: true, config: { capabilities: { publish: graderMode === "available" }, revision: "a".repeat(64), draft: { checks: [] }, totalChecks: 0, publishedVersion: 1 } } : { error: "not_found" }));
         return;
       }
       if ((req.url ?? "").includes("plan-next-session")) {
@@ -554,6 +554,18 @@ test("--require-auth blocks release until the Grader backend is deployed", { tim
     assert.equal(run.status, 1);
     const report = JSON.parse(run.stdout);
     assert.ok(report.problems.some((message: string) => message.includes("get_grader_config")));
+  } finally { await backend.close(); }
+});
+
+test("--require-auth blocks a draft-only Grader deployment without publishing", { timeout: 600_000 }, async () => {
+  const seen: Seen[] = [];
+  const backend = await startBackend(seen, "sized", "available", "available", "draft-only");
+  try {
+    const run = await runSmoke(["--packaged", "--endpoint", backend.url, "--require-auth", "--json"], { ...sanitizeEnvForSubprocess(), CODETELEMETRY_INGEST_KEY: KEY });
+    assert.equal(run.status, 1);
+    const report = JSON.parse(run.stdout);
+    assert.ok(report.problems.some((message: string) => message.includes("get_grader_config")));
+    assert.ok(!seen.some(call => call.path === "/api/agent/grader/publish"));
   } finally { await backend.close(); }
 });
 

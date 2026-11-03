@@ -357,7 +357,7 @@ async function main(): Promise<number> {
 
         const grader = await call("get_grader_config", { limit: 1 });
         const config = grader.config as Record<string, any> | undefined;
-        if (!grader.ok || !config || !/^[a-f0-9]{64}$/.test(String(config.revision)) || !Array.isArray(config.draft?.checks) || config.draft.checks.length > 1 || !Number.isSafeInteger(config.totalChecks)) {
+        if (!grader.ok || !config || !/^[a-f0-9]{64}$/.test(String(config.revision)) || !Array.isArray(config.draft?.checks) || config.draft.checks.length > 1 || config.capabilities?.publish !== true || !Number.isSafeInteger(config.totalChecks)) {
           problems.push(`get_grader_config failed or has an incompatible draft contract: ${String(grader.error ?? "invalid_response")}`);
           calls.push({ tool: "get_grader_config", ok: false, error: String(grader.error ?? "invalid_response") });
         } else calls.push({ tool: "get_grader_config", ok: true, summary: { publishedVersion: config.publishedVersion, totalChecks: config.totalChecks } });

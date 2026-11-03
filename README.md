@@ -64,8 +64,10 @@ Then just ask the agent: **"Connect me to CodeTelemetry."**
 | `estimate_plan` | T-shirt size a Claude Code / Codex **plan** (plain text or ordered steps) from the caller's own history. |
 | `estimate_linear_issue` | T-shirt size an **existing Linear issue** by URL or identifier, resolved through the workspace the user already connected. |
 | `seed_grader_config` | Inspect local agent instructions, selected skills, and project task files; return source text and command-check candidates for the user's requested grading focus. Reads files without running commands or uploading them. |
+| `publish_grader_config` | Publish the reviewed draft as a new policy version using its exact revision. Completes setup through MCP; historical scores remain unchanged. |
+| `write_grader_config_artifact` | Write selected checks as Terraform JSON or a standalone Pulumi YAML program, choosing the format from repository context. Refuses overwrites; runs no commands. |
 | `get_grader_config` | Read a page of the workspace's Grader draft, its revision, and published version. |
-| `update_grader_config` | Add, update, or remove selected draft checks while preserving others. Records the user's requested instruction features and rejects stale revisions. Publish the draft on the Grader page to change scoring. |
+| `update_grader_config` | Add, update, or remove selected draft checks while preserving others. Records the user's requested instruction features and rejects stale revisions. Use publish_grader_config with the returned revision to apply it to future scoring. |
 | `get_github_pr_gate` | Read the workspace's GitHub PR gate as its settings page shows it: the policy, trusted repositories, the GitHub Actions workflow file to commit, the check to require, outstanding steps, and recent decisions. |
 | `configure_github_pr_gate` | Set up or change the GitHub PR gate: trust repositories (`owner/repo` or `owner/*`), set the policy, enable it. Once the gate is on, a change that loosens it is refused (`requires_dashboard`) and the user makes it on the settings page. No GitHub token is involved: the workflow authenticates with GitHub's own OIDC token. |
 
@@ -114,11 +116,63 @@ edit returns `conflict`; read again before retrying. An uncertain save must also
 be read back before retrying. Only selected check definitions and your feature
 description go to the server; source file text stays local to the MCP response.
 
-Changes appear as a draft at the [Grader page](https://codetelemetry.com/app/validation).
-Publish there to apply them to scoring. MCP tools do not publish a policy or
-rewrite historical scores. Remote configuration requires a backend implementing
-`POST /api/agent/grader` and `POST /api/agent/grader/configure`; older deployments
+Changes are initially saved as a draft. To activate them, call
+`publish_grader_config` with the exact `expectedRevision` returned by
+`update_grader_config` or a fresh `get_grader_config`. The complete workflow —
+seed, select checks, save, review, publish — works through MCP without the UI.
+Publish only when the user wants activation; saving a draft stays separate.
+Publication creates a new policy version for future evaluations and leaves
+historical scores unchanged. Concurrent edits or a repeated publish using the
+same revision return `conflict`. After `publish_uncertain`, read
+`get_grader_config` and compare `publishedVersion` and `revision` before retrying.
+The [Grader page](https://codetelemetry.com/app/validation) remains an alternative. Remote configuration requires a backend implementing
+`POST /api/agent/grader`, `POST /api/agent/grader/configure`, and
+`POST /api/agent/grader/publish`; older deployments
 return `not_supported` or `not_configured`. Local seeding works without a key.
+
+
+Leave selected checks in the repository with `write_grader_config_artifact`:
+
+```json
+{
+  "repositoryPath": "/path/to/project",
+  "features": "Require successful unit tests and lint from AGENTS.md",
+  "checks": ["<selected complete check objects from the seed or draft>"]
+}
+```
+
+The example's `checks` placeholder must be replaced with actual check objects.
+Auto detection scans at most 4,000 entries, five directories deep, skipping links,
+dependencies and state directories. `.tf` / `.tf.json` selects Terraform;
+`Pulumi.yaml` / `Pulumi.yml` selects Pulumi. Mixed, missing or incomplete context
+requires `format: "terraform"` or `format: "pulumi"`, or a narrower directory.
+
+Terraform writes `codetelemetry-grader.tf.json`, for use with the local
+`codetelemetry_grader_config` provider resource. Configure the provider using
+[codetelemetry-providers](https://github.com/ElliotGardiner/codetelemetry-providers)
+before planning; it is not a published registry integration.
+Pulumi writes `codetelemetry-grader.pulumi.yaml` as JSON, a valid YAML subset.
+Move it to a **separate directory** as `Pulumi.yaml`, build the provider binary
+there at `./bin/terraform-provider-codetelemetry`, then run `pulumi install` and
+`pulumi preview`. This standalone YAML program works alongside repositories using
+any Pulumi language; it does not rewrite an existing Pulumi program.
+
+Both resources own their listed check IDs, preserve unrelated checks, and use
+revision checks on writes. An identical draft saved by the MCP can be adopted
+without a write. Conflicting existing IDs require explicit import and review.
+Destroy removes only managed draft checks. Use one state owner per workspace;
+review plans and protect production resources as needed.
+
+The requested focus is retained in Terraform locals or the Pulumi program
+description. The IaC dashboard API preserves the draft's existing
+`requestedFeatures`; use `update_grader_config` to change that remote intent.
+Artifacts contain selected check definitions, not raw instructions or skills.
+Template-like source strings remain literal. Files are created with restrictive
+permissions and never overwrite an existing file, including symlinks. Edit an
+existing artifact with normal file tools. The artifact tool does not execute IaC or publish a
+policy; use `publish_grader_config` for activation. Apply with `CODETELEMETRY_ENDPOINT` and a **Cognito ID token** in
+`CODETELEMETRY_TOKEN`, supplied through your secret manager; the MCP's ingest key
+is not the IaC credential. Keep secrets out of check definitions and protect state.
 
 ## Organizations
 

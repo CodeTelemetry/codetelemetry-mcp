@@ -18,7 +18,7 @@ infrastructure code or backend implementations. `npm run audit:package --
 <tarball>` enforces that boundary on the exact tarball used by the release
 workflow.
 
-The Grader tools require deployed `/api/agent/grader` and `/api/agent/grader/configure`
+The Grader tools require deployed `/api/agent/grader`, `/api/agent/grader/configure` and `/api/agent/grader/publish`
 support before npm publication. The authenticated release smoke reads one draft
 check and refuses an absent/incompatible backend; it never changes or publishes
 a customer policy.
@@ -71,3 +71,11 @@ production credentials. Synthetic tests stay in this repository, outside npm.
 modules, with no runtime dependency on the MCP SDK. The packaged smoke compares
 every emitted client module byte-for-byte between the two artifacts and checks
 the complete Connect file inventory. Neither release builds from a private repo.
+
+Grader publication is an explicit MCP operation. Deploy the authenticated
+`/api/agent/grader/publish` route before releasing a client advertising
+`publish_grader_config`. It uses exact draft revisions and conditional storage;
+it never automatically retries a publication or rescores historical sessions.
+Synthetic acceptance must cover the complete save/read/publish workflow, conflicts,
+tenant authentication, and uncertain publication readback. Release smoke remains
+read-only and checks the backend's publication capability without publishing.
