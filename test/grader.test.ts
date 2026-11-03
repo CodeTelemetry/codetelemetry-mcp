@@ -119,6 +119,14 @@ test("Grader tools read/write only selected checks and retain typed failures and
   assert.equal(requests[1]!.url, "https://example.test/api/agent/grader/configure");
   assert.deepEqual(requests[1]!.body, change);
   assert.ok(!JSON.stringify(saved).includes(key));
+  // A linked check as get_grader_config returns it saves with its linkage.
+  const step = (name: string) => ({ name, matcherRule: { include: { field: "executable", operator: "equals", value: "signadot" } }, requireSuccess: true });
+  const linked = { id: "vendor.signadot-validation", name: "Signadot validation completed", category: "environment_validation", weight: 20,
+    satisfactionMode: "composite", minimumOccurrences: 1, aggregationMode: "once", enabled: true, linkage: "signadot",
+    components: [step("Sandbox ready"), step("Request or test targeted it"), step("Validation succeeded")] };
+  const linkedChange = { ...change, upsertChecks: [linked] };
+  assert.equal((await callTool("update_grader_config", linkedChange, ctx)).ok, true);
+  assert.deepEqual(requests[2]!.body, linkedChange);
   for (const [status, body, expected] of [
     [409, { error: "conflict", message: "changed draft" }, "conflict"],
     [401, {}, "unauthenticated"], [429, {}, "rate_limited"], [404, {}, "not_supported"],
@@ -137,6 +145,11 @@ test("Grader tools read/write only selected checks and retain typed failures and
     ["update_grader_config", { ...change, upsertChecks: [{}] }],
     ["update_grader_config", { ...change, upsertChecks: [change.upsertChecks[0], change.upsertChecks[0]] }],
     ["update_grader_config", { ...change, upsertChecks: [{ ...change.upsertChecks[0], weight: -1 }] }],
+    ["update_grader_config", { ...change, upsertChecks: [{ ...linked, linkage: "other" }] }],
+    ["update_grader_config", { ...change, upsertChecks: [{ ...linked, components: linked.components.slice(0, 2) }] }],
+    ["update_grader_config", { ...change, upsertChecks: [{ ...linked, beforePush: true }] }],
+    ["update_grader_config", { ...change, upsertChecks: [{ ...change.upsertChecks[0], linkage: "signadot" }] }],
+    ["update_grader_config", { ...change, upsertChecks: [{ ...linked, satisfactionMode: "successful", matcherRule: linked.components[0]!.matcherRule }] }],
     ["update_grader_config", { ...change, upsertChecks: [{ ...change.upsertChecks[0], matcherRule: { include: { field: "unknown", operator: "equals", value: "test" } } }] }],
     ["update_grader_config", { ...change, publish: true }],
     ["update_grader_config", { ...change, removeCheckIds: [3] }],

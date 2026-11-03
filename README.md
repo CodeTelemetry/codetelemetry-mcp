@@ -31,7 +31,7 @@ deterministic (see [Releases & discovery](#releases--discovery)):
 ```json
 {
   "mcpServers": {
-    "codetelemetry": { "command": "npx", "args": ["-y", "--package=@codetelemetry/mcp@0.3.12", "codetelemetry-mcp"] }
+    "codetelemetry": { "command": "npx", "args": ["-y", "--package=@codetelemetry/mcp@0.3.13", "codetelemetry-mcp"] }
   }
 }
 ```

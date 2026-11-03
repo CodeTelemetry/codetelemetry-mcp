@@ -582,6 +582,7 @@ const GRADER_CHECK_PROP = obj({
   evidenceRequirement: { type: "string", enum: ["coverage_increase"] },
   createdFromActivityId: { type: "string", maxLength: 512 },
   components: { type: "array", minItems: 1, maxItems: 8, items: obj({ name: { type: "string", minLength: 1, maxLength: 120 }, matcherRule: GRADER_MATCHER_PROP, requireSuccess: { type: "boolean" } }, ["name", "matcherRule", "requireSuccess"]) },
+  linkage: { type: "string", enum: ["signadot"], description: "Links a three-component composite's steps to one Signadot sandbox: the sandbox it was ready in, a request or test routed to it, and that run's result. Never before push. Keep it when re-saving a check read from get_grader_config; dropping it leaves an unlinked composite that any sandbox step and any request satisfy." },
 }, ["id", "name", "category", "weight", "satisfactionMode", "minimumOccurrences", "aggregationMode", "enabled"]);
 // Validate the public input contract before spending an authenticated request.
 // The service still owns policy semantics and the authoritative validators.
@@ -618,6 +619,7 @@ function graderCheckValid(value: any): boolean {
   if (!graderSchemaValid(value, GRADER_CHECK_PROP) || !value.name.trim()) return false;
   if ([value.matcherRule, value.detectorRule, value.applicabilityRule].some(rule => rule !== undefined && !graderMatcherValid(rule))) return false;
   if (value.components?.some((part: any) => !part.matcherRule?.include || !graderMatcherValid(part.matcherRule))) return false;
+  if (value.linkage !== undefined && (value.satisfactionMode !== "composite" || value.components?.length !== 3 || value.beforePush)) return false;
   return value.satisfactionMode === "composite" ? Boolean(value.components?.length) : Boolean(value.matcherRule?.include || value.detectorRule?.include);
 }
 const GRADER_SETTINGS_PATH = "/app/validation";
