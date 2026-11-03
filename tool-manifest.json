@@ -1,7 +1,7 @@
 {
   "serverName": "codetelemetry",
-  "serverVersion": "0.3.12",
-  "registryHash": "c2eb97eb39b2a99c8b5d71a1903dc91fab72ad537c2e83403511f3db31fef126",
+  "serverVersion": "0.3.13",
+  "registryHash": "e0329f3b449c2ba4cb699724caf5479a6945af15e2b5a520155d9522d814af4a",
   "toolCount": 26,
   "tools": [
     {
@@ -1198,6 +1198,13 @@
                     ],
                     "additionalProperties": false
                   }
+                },
+                "linkage": {
+                  "type": "string",
+                  "enum": [
+                    "signadot"
+                  ],
+                  "description": "Links a three-component composite's steps to one Signadot sandbox: the sandbox it was ready in, a request or test routed to it, and that run's result. Never before push. Keep it when re-saving a check read from get_grader_config; dropping it leaves an unlinked composite that any sandbox step and any request satisfy."
                 }
               },
               "required": [
