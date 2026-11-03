@@ -31,12 +31,91 @@ deterministic (see [Releases & discovery](#releases--discovery)):
 ```json
 {
   "mcpServers": {
-    "codetelemetry": { "command": "npx", "args": ["-y", "--package=@codetelemetry/mcp@0.3.14", "codetelemetry-mcp"] }
+    "codetelemetry": { "command": "npx", "args": ["-y", "--package=@codetelemetry/mcp@0.4.0", "codetelemetry-mcp"] }
   }
 }
 ```
 
 Then just ask the agent: **"Connect me to CodeTelemetry."**
+
+## Persistent organization workspaces
+
+Ask the agent: **Create a Acme workspace for this repository and configure its Grader.**
+It calls `bootstrap_workspace` with a stable local context name, the repository path,
+and either `organizationName` (new) or `organizationId` (existing). Select checks
+with `seed_grader_config` and pass the reviewed `checks` and `features`; `publish`
+explicitly publishes them, and `terraform` leaves an IaC artifact.
+
+The first call returns one browser approval URL. The page identifies the signed-in
+account and destination, supports changing account, and creates a requested new
+organization. Resume with just the same `name`. The private checkpoint survives
+MCP restarts, expired device codes and interrupted responses. Creation uses the
+same operation ID on retries; existing organizations are selected by ID, never name.
+
+```sh
+npx -y @codetelemetry/connect bootstrap acme \
+  --organization-name "Acme" --client codex --project /path/to/repository
+# After approval (or funding), resume the exact saved plan:
+npx -y @codetelemetry/connect bootstrap acme
+npx -y @codetelemetry/connect workspace list
+```
+
+`--plan file.json` supplies the same bootstrap fields as the MCP tool, including
+selected Grader checks. CLI exit 2 means setup is waiting for the returned action;
+exit 0 means the requested checks completed. Funding is checked before client
+configuration. No credits or seats are purchased. Content and repository observation
+remain separate explicit opt-ins.
+
+Credentials are private version-1 JSON files under
+`$CODETELEMETRY_CONTEXT_HOME/<name>.json`, defaulting to
+`$XDG_CONFIG_HOME/codetelemetry/workspaces` or
+`~/.config/codetelemetry/workspaces`. Files are owned, mode 0600 on POSIX, atomically
+replaced, and bounded to 64 KiB. There are at most 64 contexts and 192 directory
+entries including checkpoints/locks. Unsafe versions, symlinks, mismatched account,
+organization, billing account or origin fail closed. Failed authorization never
+falls back to personal scope. Expired credentials can be replaced with
+`bootstrap_workspace` using `reauthorize: true`; the replacement must attest the
+same identity. Remove an unused named context/checkpoint explicitly to free capacity.
+
+The repository's `.codetelemetry/workspace.json` contains only the context name,
+service origin and scope. It can be committed; never commit the private context,
+client config, Terraform state or plan. Bindings are found from subdirectories up
+to the repository root. `CODETELEMETRY_WORKSPACE` selects a context explicitly but
+must agree with an existing repository binding. MCP verifies scope at restore and
+before use; governance requests also carry the expected scope so a key rescope
+cannot race a check and change personal configuration.
+
+For existing auth, call `workspace_context` with `action: "save"`, a name and
+`repositoryPath`. `action: "use"` selects an already-saved context. Rebinding a
+repository requires explicitly removing its previous binding. Unbound clients
+retain the legacy login behavior.
+
+Bootstrap writes Claude settings inside the repository. Codex ignores project-local
+`otel`, so bootstrap writes a dedicated user-level profile
+`$CODEX_HOME/codetelemetry-<name>.config.toml` (or the default `~/.codex` directory).
+Launch with `codetelemetry-connect run <name> -- <arguments>` or
+`codex --profile codetelemetry-<name>` in the bound repository. The profile retains
+your base sign-in/settings while overriding telemetry and its explicit content
+opt-in. It does not rewrite the base config or copy auth tokens. The profile also registers the version-pinned workspace MCP server and disables
+the standard global CodeTelemetry MCP entry for that profile. Claude receives a
+project `.mcp.json` entry bound to the same context. Optional Codex observation
+hooks live in the profile and run only when it is selected.
+See [OpenAI configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)
+and [profiles](https://learn.chatgpt.com/docs/config-file/config-advanced#profiles).
+Secret-bearing project paths are added to `.gitignore` before configuration.
+
+A requested GitHub gate produces its generated workflow locally. Bootstrap then
+reads GitHub through the existing `gh` authentication and checks the default-branch
+workflow, required check, and a real organization-scoped PR decision for the local
+HEAD and published policy after setup started. It reports pending repository
+work explicitly. It does not claim a PR passed merely because a probe landed.
+A verified gate decision retains its actual success/failure verdict and score.
+Terraform artifact generation is reported separately from applying Terraform.
+
+The public service must deploy `/api/device/code/bootstrap-v1` and the matching
+approval route before clients use new-organization creation. Older deployments
+refuse the versioned request rather than creating a personal key. Existing-org
+contexts use the established scope-v1 device flow.
 
 ## Tools
 
@@ -44,6 +123,8 @@ Then just ask the agent: **"Connect me to CodeTelemetry."**
 | --- | --- |
 | `count_reply_phrases` | Count how often your own phrases appear in your Claude model replies, per day or week and per model (turns, turns with a match, per-phrase counts). Plain-text phrases with `{a|b}` / `[a|b]` groups, whole-word and case-insensitive; main-thread replies only; counts and session references, never reply text. |
 | `import_history` | Import this machine's past Claude Code / Codex sessions (`~/.claude/projects`, `~/.codex/sessions`) through the normal ingest, tagged as imported. Dry run by default; skips sessions captured live or already imported; resumes interrupted imports; pages with `remaining`. Content defaults to `live` (what your live exporters send); `none` opts out. |
+| `workspace_context` | Save, list or select persistent verified workspace contexts. Repository bindings contain no credentials; cold MCP processes restore the bound context. |
+| `bootstrap_workspace` | Create or select an organization, authorize once, and resume funding, repository-local telemetry, Grader publication, Terraform artifacts and GitHub gate verification. |
 | `authenticate` | Start device-code auth; returns a URL + short code for the human to approve. Optional `organizationId` connects one of the user's organizations; optional `workspaceUrl` picks a CodeTelemetry server (codetelemetry.com hosts only). |
 | `auth_status` | Poll the approval; on success captures the key into the session (masked-only to the model). |
 | `get_ingest_key` | Record a pasted key (fast path) or report the authenticated one — masked + hash only. |

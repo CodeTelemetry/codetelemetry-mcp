@@ -8,6 +8,8 @@
 // CLI prints it masked and never echoes the plaintext.
 
 import fs from "node:fs";
+import { bootstrapWorkspace, type BootstrapOptions } from "./bootstrap.ts";
+import { listWorkspaces, loadWorkspace, bindWorkspace, bindingOf, findWorkspaceBinding, sameWorkspace, writeCodexWorkspaceProfile } from "./workspaces.ts";
 import { runKiroCommand } from "./kiro/command.ts";
 import { spawn } from "node:child_process";
 import { onboard, type OnboardClient } from "./onboard.ts";
@@ -61,6 +63,12 @@ const HELP = `codetelemetry-connect — wire Claude Code, OpenAI Codex or pi int
 
 Usage:
   codetelemetry-connect <cot_key> [options]   Write config, send a test event, confirm it landed
+  codetelemetry-connect run <name> -- <coding-client arguments>
+                         Start the coding client with this context and isolated telemetry.
+  codetelemetry-connect workspace list|use <name>
+  codetelemetry-connect bootstrap <name> [--organization-name NAME | --organization-id ID]
+                         [--client codex|claude] [--project PATH] [--plan FILE]
+                         Resume with just bootstrap <name>. --plan supplies Grader checks/features.
   codetelemetry-connect login [options]       Authenticate via device code, then do the above
   codetelemetry-connect doctor [options]      Re-test the already-configured key
   codetelemetry-connect print-config          Print the config block (no key)
@@ -425,6 +433,17 @@ async function runImportCommand(
 }
 
 export async function run(argv: string[]): Promise<number> {
+  if(argv[0]==="run") {
+    const context=loadWorkspace(argv[1]);const binding=findWorkspaceBinding();
+    if(binding&&!sameWorkspace(binding,context))throw new Error("Selected context conflicts with this repository.");
+    const verified=await verifyScope({key:context.ingestKey,connectivityUrl:resolveEndpoints({apiBase:context.apiBase}).connectivityUrl,expected:context.scope});
+    if(verified.state!=="scope_verified")throw new Error(`Workspace is not ready to run: ${verified.state}.`);
+    const client=context.clientConfig?.client??"codex";
+    const args=argv.slice(argv[2]==="--"?3:2);
+    if(client==="codex")writeCodexWorkspaceProfile(context,context.clientConfig);
+    const child=spawn(client,client==="codex"?["--profile",`codetelemetry-${context.name}`,...args]:args,{stdio:"inherit",env:{...process.env,CODETELEMETRY_WORKSPACE:context.name}});
+    return await new Promise<number>((resolve,reject)=>{child.once("error",()=>reject(new Error("Coding client could not start; check its installation.")));child.once("exit",code=>resolve(code??1));});
+  }
   const { _, flags } = parse(argv);
   const cmd = _[0];
 
@@ -433,6 +452,25 @@ export async function run(argv: string[]): Promise<number> {
     return 0;
   }
 
+  if (cmd === "workspace") {
+    if (_[1] === "list") { out(JSON.stringify(listWorkspaces(), null, 2)); return 0; }
+    if (_[1] === "use" && _[2]) { const context = loadWorkspace(_[2]); const bindingPath = bindWorkspace(typeof flags.project === "string" ? flags.project : process.cwd(), context); out(JSON.stringify({workspace:bindingOf(context),bindingPath},null,2)); return 0; }
+    throw new Error("Use workspace list or workspace use <name>.");
+  }
+  if (cmd === "bootstrap") {
+    let options: BootstrapOptions = {name:_[1]};
+    if (typeof flags.plan === "string") {
+      const st=fs.lstatSync(flags.plan); if(!st.isFile()||st.size>48*1024) throw new Error("Bootstrap plan must be a regular JSON file within 48 KiB.");
+      options={...JSON.parse(fs.readFileSync(flags.plan,"utf8")),name:_[1]};
+    }
+    if(typeof flags.project === "string") options.repositoryPath=flags.project;
+    if(typeof flags["organization-name"] === "string") options.organizationName=flags["organization-name"];
+    if(typeof flags["organization-id"] === "string") options.organizationId=flags["organization-id"];
+    if(typeof flags.client === "string") options.client=flags.client as "claude"|"codex";
+    const result=await bootstrapWorkspace(options,{apiBase:typeof flags["api-base"] === "string"?flags["api-base"]:undefined});
+    out(JSON.stringify(result,null,2)); if(result.status==="authorization_required" && flags.open!==false && !flags.json) openBrowser(String((result as any).authorizationUrl));
+    return result.ok?0:2;
+  }
   if (cmd === "kiro") return runKiroCommand(_.slice(1), flags, out);
 
   const picked = pickClient(flags);

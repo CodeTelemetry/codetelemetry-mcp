@@ -69,7 +69,7 @@ export function writeGraderArtifact(options: { repositoryPath: string; format?: 
   } finally { fs.closeSync(directory); }
   return { path: path.join(root, relative), format, evidence,
     nextSteps: format === "terraform"
-      ? "Configure the local codetelemetry provider from codetelemetry-providers, then review terraform plan. The resource owns only the listed check ids. The locals retain requested focus; the dashboard API preserves its existing requestedFeatures."
+      ? "Use the CodeTelemetry/codetelemetry-iac provider with the repository workspace binding, then review terraform plan. The resource owns only the listed check ids. The locals retain requested focus; the dashboard API preserves its existing requestedFeatures."
       : "Move this file to a separate directory as Pulumi.yaml (JSON is valid YAML), build the codetelemetry-providers binary at ./bin/terraform-provider-codetelemetry in that directory, then run pulumi install and pulumi preview. The resource owns only the listed check ids. The program description retains requested focus; the dashboard API preserves its existing requestedFeatures.",
-    note: "No commands ran and nothing was published. Supply CODETELEMETRY_ENDPOINT and a Cognito ID token as CODETELEMETRY_TOKEN through your secret manager when applying. This artifact contains no credentials. Use MCP publish_grader_config to publish draft changes separately when requested." };
+    note: "No commands ran and nothing was published. The organization-capable CodeTelemetry/codetelemetry-iac provider reads the repository workspace binding or CODETELEMETRY_WORKSPACE without a pasted JWT for Grader changes. Legacy management-token configuration remains supported. This artifact contains no credentials. Use MCP publish_grader_config to publish draft changes separately when requested." };
 }

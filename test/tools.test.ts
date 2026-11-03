@@ -18,6 +18,7 @@ test("registry exposes the documented tools with JSON-schema inputs", () => {
   assert.deepEqual(names, [
     "auth_status",
     "authenticate",
+    "bootstrap_workspace",
     "compare_sessions",
     "configure_github_pr_gate",
     "count_reply_phrases",
@@ -42,6 +43,7 @@ test("registry exposes the documented tools with JSON-schema inputs", () => {
     "status",
     "update_grader_config",
     "verify_telemetry",
+    "workspace_context",
     "write_grader_config_artifact",
     "write_local_config",
   ]);
