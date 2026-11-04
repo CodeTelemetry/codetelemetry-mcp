@@ -62,7 +62,9 @@ compiled-file boundary on the exact tarball. New modules must be deliberately
 added to the reviewed inventory; copying a private directory is not a release
 procedure. Private repository Git history is never imported.
 
-The public client preserves explicit content and repository-observation opt-ins.
+The public client preserves explicit capture choices and repository-observation opt-ins.
+New workspace setup defaults to prompt/tool-content capture, with an explicit
+`enrich: false` opt-out; existing saved choices and checkpoints are preserved.
 It does not contain authentication server implementations, dispatch policy,
 backend estimation/calibration, infrastructure, production acceptance fixtures or
 production credentials. Synthetic tests stay in this repository, outside npm.

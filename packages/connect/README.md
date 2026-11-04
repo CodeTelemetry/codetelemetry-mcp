@@ -6,5 +6,7 @@ This package builds directly from the shared public client source, with no runti
 dependency on the MCP server or its SDK.
 
 Run `npx -y @codetelemetry/connect --help`. Kiro collection requires Node 24.
-Content and repository-observation telemetry are disabled by default. See the
-repository README for privacy, client setup and service removal.
+New `bootstrap` workspace setups enable prompt and tool-content capture by default;
+use `--no-enrich` to opt out. Saved choices survive resumption. Personal onboarding
+and repository-observation defaults are unchanged. See the repository README for
+privacy, client setup and service removal.

@@ -31,7 +31,7 @@ deterministic (see [Releases & discovery](#releases--discovery)):
 ```json
 {
   "mcpServers": {
-    "codetelemetry": { "command": "npx", "args": ["-y", "--package=@codetelemetry/mcp@0.4.0", "codetelemetry-mcp"] }
+    "codetelemetry": { "command": "npx", "args": ["-y", "--package=@codetelemetry/mcp@0.4.1", "codetelemetry-mcp"] }
   }
 }
 ```
@@ -59,6 +59,16 @@ npx -y @codetelemetry/connect bootstrap acme \
 npx -y @codetelemetry/connect bootstrap acme
 npx -y @codetelemetry/connect workspace list
 ```
+
+New workspace setups capture prompts and tool content by default so session titles,
+replay and command evidence work immediately. Pass `enrich: false` to
+`bootstrap_workspace`, or `--no-enrich` to Connect bootstrap, to opt out. The choice
+is saved in the setup plan; resuming preserves explicit opt-outs, existing saved
+client choices and legacy checkpoints. A new named Codex profile also defaults to
+capture when no earlier capture choice exists. This does not change personal
+onboarding defaults or another workspace's configuration. Captured team-scoped
+content follows the organization's visibility policy; new organizations disclose
+member visibility during creation, and administrators can change it in settings.
 
 `--plan file.json` supplies the same bootstrap fields as the MCP tool, including
 selected Grader checks. CLI exit 2 means setup is waiting for the returned action;

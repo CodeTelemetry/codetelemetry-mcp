@@ -84,7 +84,7 @@ export const workspaceTools: ToolDef[] = [
     name: "bootstrap_workspace",
     title: "Create or resume a workspace setup",
     description:
-      "Create/select an organization and finish repository-scoped setup using a persistent named context. The first call returns one browser approval URL; later calls with the same name resume the saved plan, verify funding and ingestion, optionally save/publish selected Grader checks and write Terraform. No credits or seats are purchased. Pass organizationName to create or organizationId to select. Existing contexts need neither. Each call is bounded; pending steps are explicit. Secrets stay local; unrelated global configurations are unchanged.",
+      "Create/select an organization and finish repository-scoped setup using a persistent named context. New workspace setups enable prompt and tool-content capture by default; pass enrich:false to opt out. Saved capture choices are preserved on resume. The first call returns one browser approval URL; later calls with the same name resume the saved plan, verify funding and ingestion, optionally save/publish selected Grader checks and write Terraform. No credits or seats are purchased. Pass organizationName to create or organizationId to select. Existing contexts need neither. Each call is bounded; pending steps are explicit. Secrets stay local; unrelated global configurations are unchanged.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -108,7 +108,7 @@ export const workspaceTools: ToolDef[] = [
           description:
             "Replace an expired or revoked credential after fresh approval, preserving this exact account and organization.",
         },
-        enrich: { type: "boolean" },
+        enrich: { type: "boolean", default: true, description: "Capture prompts and tool content for new workspace setups (default true). Set false to opt out. Existing saved choices are preserved." },
         repositoryObservation: { type: "boolean" },
       },
     },
