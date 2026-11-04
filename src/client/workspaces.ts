@@ -3,9 +3,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { buildOtelSection } from "./codexConfig.ts";
-import { repositoryHookSource, quotedCommand } from "./repositoryHook.ts";
+import { repositoryHookSource, quotedCommand, REPOSITORY_HOOK_FILE } from "./repositoryHook.ts";
 import { looksLikeKey } from "./keys.ts";
 import type { KeyScope } from "./connectivity.ts";
 
@@ -204,6 +204,7 @@ export function writeCodexWorkspaceProfile(
 ): { path: string } {
   const profilePath = codexWorkspaceProfilePath(context.name),
     marker = `# CodeTelemetry workspace ${context.name}\n`;
+  upgradeLegacyCodexObserver(path.dirname(profilePath));
   if (fs.existsSync(profilePath)) {
     noLinks(profilePath);
     const st = fs.lstatSync(profilePath);
@@ -230,7 +231,7 @@ export function writeCodexWorkspaceProfile(
     const hookPath = path.join(workspaceHome(), `${context.name}.hook.cjs`);
     writeWorkspaceText(
       hookPath,
-      repositoryHookSource({ codexConfigPath: profilePath }),
+      repositoryHookSource({ codexConfigPath: profilePath, workspaceName: context.name }),
     );
     for (const event of ["SessionStart", "UserPromptSubmit", "PostToolUse"])
       text += `\n[[hooks.${event}]]\n[[hooks.${event}.hooks]]\ntype = "command"\ncommand = ${JSON.stringify(quotedCommand(hookPath))}\ntimeout = 3\n`;
@@ -254,6 +255,41 @@ export function writeCodexWorkspaceProfile(
   text += `\n[mcp_servers.codetelemetry_workspace]\ncommand = "npx"\nargs = ["-y", "--package=${WORKSPACE_MCP_PACKAGE}", "codetelemetry-mcp"]\n\n[mcp_servers.codetelemetry_workspace.env]\nCODETELEMETRY_WORKSPACE = ${JSON.stringify(context.name)}\nCODETELEMETRY_CONTEXT_HOME = ${JSON.stringify(workspaceHome())}\n`;
   writeWorkspaceText(profilePath, text);
   return { path: profilePath };
+}
+
+function upgradeLegacyCodexObserver(codexHome: string): void {
+  const file = path.join(codexHome, REPOSITORY_HOOK_FILE);
+  if (!fs.existsSync(file)) return;
+  noLinks(file);
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  let source: string;
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.size > MAX_WORKSPACE_BYTES ||
+        (process.platform !== "win32" && (st.uid !== process.getuid?.() || (st.mode & 0o077) !== 0)))
+      throw new Error("Existing CodeTelemetry observer must be an owned private regular file.");
+    const bytes = Buffer.alloc(MAX_WORKSPACE_BYTES + 1);
+    const count = fs.readSync(fd, bytes, 0, bytes.length, 0);
+    if (count > MAX_WORKSPACE_BYTES) throw new Error("Existing CodeTelemetry observer exceeds 64 KiB.");
+    source = bytes.subarray(0, count).toString("utf8");
+  } finally { fs.closeSync(fd); }
+  const configPath = path.join(codexHome, "config.toml");
+  const updated = repositoryHookSource({ codexConfigPath: configPath });
+  if (source === updated) return;
+  const declaration = `const codexConfigPath = ${JSON.stringify(configPath)};`;
+  const fingerprint = createHash("sha256").update(source.replace(declaration, 'const codexConfigPath = "";')).digest("hex");
+  // Published 0.3.7–0.3.14 / Connect 0.1.5 and the equivalent source-mode
+  // template. Only the embedded nonsecret config path varies per installation.
+  const recognized = new Set([
+    "69dd5ad120636379875fc411bcaaa096defe475944d24a6e899dc9796472ab2d",
+    "65eaa30f6c565b0298137986bbe4e94d0435f8fedc2574fa284e7979a5fa9ef4",
+  ]);
+  if (!source.includes(declaration) || !recognized.has(fingerprint))
+    throw new Error("Existing CodeTelemetry observer differs from a recognized client release. Review or update that helper before configuring a workspace; its global hook definitions were preserved.");
+  // Keep the trusted hook command and all unrelated hooks intact. In named
+  // repositories the upgraded global helper abstains; the selected profile's
+  // explicit observation setting is the sole CodeTelemetry reporter.
+  writeWorkspaceText(file, updated);
 }
 export function workspaceEntries(): string[] {
   noLinks(workspaceHome());
