@@ -69,6 +69,7 @@ Usage:
   codetelemetry-connect bootstrap <name> [--organization-name NAME | --organization-id ID]
                          [--client codex|claude] [--project PATH] [--plan FILE]
                          Resume with just bootstrap <name>. --plan supplies Grader checks/features.
+                         New setups capture prompts/tool content; --no-enrich opts out.
   codetelemetry-connect login [options]       Authenticate via device code, then do the above
   codetelemetry-connect doctor [options]      Re-test the already-configured key
   codetelemetry-connect print-config          Print the config block (no key)
@@ -467,6 +468,10 @@ export async function run(argv: string[]): Promise<number> {
     if(typeof flags["organization-name"] === "string") options.organizationName=flags["organization-name"];
     if(typeof flags["organization-id"] === "string") options.organizationId=flags["organization-id"];
     if(typeof flags.client === "string") options.client=flags.client as "claude"|"codex";
+    if (flags.enrich !== undefined) {
+      if (typeof flags.enrich !== "boolean") throw new Error("--enrich/--no-enrich must be a boolean flag.");
+      options.enrich = flags.enrich;
+    }
     const result=await bootstrapWorkspace(options,{apiBase:typeof flags["api-base"] === "string"?flags["api-base"]:undefined});
     out(JSON.stringify(result,null,2)); if(result.status==="authorization_required" && flags.open!==false && !flags.json) openBrowser(String((result as any).authorizationUrl));
     return result.ok?0:2;

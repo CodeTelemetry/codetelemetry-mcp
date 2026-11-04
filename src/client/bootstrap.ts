@@ -10,6 +10,7 @@ import {
   bindingOf,
   codexWorkspaceProfilePath,
   writeCodexWorkspaceProfile,
+  workspaceCaptureDefault,
   WORKSPACE_MCP_PACKAGE,
   contextPath,
   workspaceLock,
@@ -124,7 +125,7 @@ async function request(
     );
   return result;
 }
-function validatePlan(options: BootstrapOptions): State["plan"] {
+function validatePlan(options: BootstrapOptions, enrichDefault?: boolean): State["plan"] {
   workspaceName(options.name);
   const allowed = new Set([
     "name",
@@ -233,7 +234,13 @@ function validatePlan(options: BootstrapOptions): State["plan"] {
     throw new Error(
       "Bootstrap writes only this workspace's named Codex profile or repository-local Claude settings.",
     );
-  return { ...options, repositoryPath, client, configPath };
+  return {
+    ...options,
+    // Freeze the choice in new plans. Validation of an older checkpoint leaves
+    // an omitted field omitted, preserving that operation's historical opt-out.
+    ...(options.enrich === undefined && enrichDefault !== undefined ? { enrich: enrichDefault } : {}),
+    repositoryPath, client, configPath,
+  };
 }
 export async function bootstrapWorkspace(
   options: BootstrapOptions,
@@ -301,7 +308,8 @@ export async function bootstrapWorkspace(
         throw new Error(
           "This context already exists. Omit organizationName to configure it, or choose a new context name to create another organization.",
         );
-      const plan = validatePlan(options);
+      const existing = fs.existsSync(contextPath(name)) ? loadWorkspace(name) : null;
+      const plan = validatePlan(options, existing ? workspaceCaptureDefault(existing) : true);
       state = {
         version: 1,
         name,

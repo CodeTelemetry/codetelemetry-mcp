@@ -9,7 +9,7 @@ import { repositoryHookSource, quotedCommand, REPOSITORY_HOOK_FILE } from "./rep
 import { looksLikeKey } from "./keys.ts";
 import type { KeyScope } from "./connectivity.ts";
 
-export const WORKSPACE_MCP_PACKAGE = "@codetelemetry/mcp@0.4.0";
+export const WORKSPACE_MCP_PACKAGE = "@codetelemetry/mcp@0.4.1";
 export const MAX_WORKSPACE_BYTES = 64 * 1024;
 export const MAX_WORKSPACES = 64;
 export type WorkspaceBinding = {
@@ -198,10 +198,28 @@ export function codexWorkspaceProfilePath(name: string): string {
     `codetelemetry-${workspaceName(name)}.config.toml`,
   );
 }
+export function workspaceCaptureDefault(context: WorkspaceContext): boolean {
+  if (context.clientConfig) return context.clientConfig.enrich;
+  const file = codexWorkspaceProfilePath(context.name);
+  if (!fs.existsSync(file)) return true;
+  noLinks(file);
+  const stat = fs.lstatSync(file);
+  if (!stat.isFile() || stat.size > MAX_WORKSPACE_BYTES) throw new Error("Invalid workspace profile.");
+  const text = fs.readFileSync(file, "utf8");
+  if (!text.startsWith(`# CodeTelemetry workspace ${context.name}\n`)) {
+    throw new Error("The Codex workspace profile is not managed by CodeTelemetry; choose a different context name.");
+  }
+  // Older saved contexts may predate clientConfig. Their managed profile still
+  // records the prior capture choice; absence uses the old (disabled) default.
+  const section = text.match(/^\[otel\]\r?\n([\s\S]*?)(?=^\[|(?![\s\S]))/m)?.[1] ?? "";
+  return /^\s*log_user_prompt\s*=\s*true\s*(?:#.*)?$/m.test(section);
+}
+
 export function writeCodexWorkspaceProfile(
   context: WorkspaceContext,
   options: { enrich?: boolean; repositoryObservation?: boolean } = {},
 ): { path: string } {
+  const enrich = options.enrich ?? workspaceCaptureDefault(context);
   const profilePath = codexWorkspaceProfilePath(context.name),
     marker = `# CodeTelemetry workspace ${context.name}\n`;
   upgradeLegacyCodexObserver(path.dirname(profilePath));
@@ -222,10 +240,10 @@ export function writeCodexWorkspaceProfile(
     buildOtelSection(
       context.ingestKey,
       context.ingestEndpoint,
-      options.enrich === true,
+      enrich,
     ) +
     "\n";
-  if (!options.enrich)
+  if (!enrich)
     text = text.replace("[otel]\n", "[otel]\nlog_user_prompt = false\n");
   if (options.repositoryObservation) {
     const hookPath = path.join(workspaceHome(), `${context.name}.hook.cjs`);

@@ -23,6 +23,7 @@ import {
 import { bootstrapWorkspace } from "../src/client/bootstrap.ts";
 import { callTool } from "../src/tools.ts";
 import { OnboardingSession } from "../src/session.ts";
+import { run } from "../src/client/cli.ts";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "ct-contexts-"));
 process.env.CODETELEMETRY_CONTEXT_HOME = path.join(root, "contexts");
@@ -240,7 +241,7 @@ test("bootstrap pauses before config writes for funding and resumes publication 
   assert.ok(
     fs
       .readFileSync(codexWorkspaceProfilePath(context.name), "utf8")
-      .includes("log_user_prompt = false"),
+      .includes("log_user_prompt = true"),
   );
   assert.ok(!fs.existsSync(path.join(repository, ".codex/config.toml")));
   assert.ok(
@@ -315,6 +316,76 @@ test("workspace profile hooks are scoped to the selected profile and never mutat
       .includes(context.ingestKey),
   );
   assert.equal(fs.readFileSync(hooksFile, "utf8"), '{"hooks":{}}');
+});
+
+test("new Codex and Claude workspace plans capture prompts by default and persist that choice", async () => {
+  for (const client of ["codex", "claude"] as const) {
+    const name = `default-capture-${client}`;
+    const repo = path.join(root, name);
+    fs.mkdirSync(repo);
+    saveWorkspace({ ...context, name });
+    const result = await bootstrapWorkspace({ name, client, repositoryPath: repo }, { apiBase: context.apiBase, fetchImpl });
+    assert.equal(result.status, "ready");
+    const saved = loadWorkspace(name);
+    assert.equal(saved.clientConfig?.enrich, true);
+    const checkpoint = readWorkspaceFile(path.join(process.env.CODETELEMETRY_CONTEXT_HOME!, `${name}.bootstrap.json`)) as any;
+    assert.equal(checkpoint.plan.enrich, true);
+    const text = fs.readFileSync(saved.clientConfig!.path, "utf8");
+    if (client === "codex") assert.match(text, /log_user_prompt = true/);
+    else {
+      const env = JSON.parse(text).env;
+      assert.equal(env.OTEL_LOG_USER_PROMPTS, "1");
+      assert.equal(env.OTEL_LOG_TOOL_DETAILS, "1");
+    }
+  }
+});
+
+test("explicit, previously saved, and legacy checkpoint capture opt-outs survive restart", async () => {
+  const name = "capture-opt-out", repo = path.join(root, name);
+  fs.mkdirSync(repo);
+  saveWorkspace({ ...context, name });
+  const env = { apiBase: context.apiBase, fetchImpl };
+  assert.equal((await bootstrapWorkspace({ name, repositoryPath: repo, enrich: false }, env)).status, "ready");
+  assert.equal((await bootstrapWorkspace({ name }, env)).status, "ready");
+  assert.equal(loadWorkspace(name).clientConfig?.enrich, false);
+  assert.match(fs.readFileSync(codexWorkspaceProfilePath(name), "utf8"), /log_user_prompt = false/);
+  const file = path.join(process.env.CODETELEMETRY_CONTEXT_HOME!, `${name}.bootstrap.json`);
+  const legacy = readWorkspaceFile(file) as any;
+  delete legacy.plan.enrich;
+  writeWorkspaceFile(file, legacy);
+  assert.equal((await bootstrapWorkspace({ name }, env)).status, "ready");
+  assert.equal(loadWorkspace(name).clientConfig?.enrich, false);
+  assert.equal(Object.hasOwn((readWorkspaceFile(file) as any).plan, "enrich"), false);
+  const oldName = "previous-capture-choice", oldRepo = path.join(root, oldName);
+  fs.mkdirSync(oldRepo);
+  saveWorkspace({ ...context, name: oldName, clientConfig: { client: "codex", path: codexWorkspaceProfilePath(oldName), enrich: false, repositoryObservation: false } });
+  assert.equal((await bootstrapWorkspace({ name: oldName, repositoryPath: oldRepo }, env)).status, "ready");
+  assert.equal(loadWorkspace(oldName).clientConfig?.enrich, false);
+  writeCodexWorkspaceProfile(loadWorkspace(oldName));
+  assert.match(fs.readFileSync(codexWorkspaceProfilePath(oldName), "utf8"), /log_user_prompt = false/);
+  const profileName = "old-profile-capture-choice", profileRepo = path.join(root, profileName);
+  fs.mkdirSync(profileRepo);
+  const oldProfileContext = { ...context, name: profileName };
+  saveWorkspace(oldProfileContext);
+  writeCodexWorkspaceProfile(oldProfileContext, { enrich: false });
+  assert.equal((await bootstrapWorkspace({ name: profileName, repositoryPath: profileRepo }, env)).status, "ready");
+  assert.equal(loadWorkspace(profileName).clientConfig?.enrich, false);
+  assert.match(fs.readFileSync(codexWorkspaceProfilePath(profileName), "utf8"), /log_user_prompt = false/);
+});
+
+test("Connect bootstrap honors the default and its explicit --no-enrich opt-out", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fetchImpl;
+  try {
+    for (const capture of [true, false]) {
+      const name = capture ? "cli-capture-default" : "cli-capture-off";
+      const repo = path.join(root, name);
+      fs.mkdirSync(repo);
+      saveWorkspace({ ...context, name });
+      assert.equal(await run(["bootstrap", name, "--project", repo, "--api-base", context.apiBase, "--json", ...(capture ? [] : ["--no-enrich"])]), 0);
+      assert.equal(loadWorkspace(name).clientConfig?.enrich, capture);
+    }
+  } finally { globalThis.fetch = originalFetch; }
 });
 
 test("an installed legacy observer abstains in workspace sessions while personal reporting and hook definitions survive", async () => {
