@@ -4,6 +4,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import http from "node:http";
+import { spawn } from "node:child_process";
+import { REPOSITORY_HOOK_FILE } from "../src/client/repositoryHook.ts";
 import {
   saveWorkspace,
   loadWorkspace,
@@ -312,6 +315,77 @@ test("workspace profile hooks are scoped to the selected profile and never mutat
       .includes(context.ingestKey),
   );
   assert.equal(fs.readFileSync(hooksFile, "utf8"), '{"hooks":{}}');
+});
+
+test("an installed legacy observer abstains in workspace sessions while personal reporting and hook definitions survive", async () => {
+  const previousHome = process.env.CODEX_HOME!;
+  const home = path.join(root, "legacy-observer-home");
+  const personalRepo = path.join(root, "legacy-personal-repo");
+  const namedRepo = path.join(root, "legacy-named-repo");
+  for (const dir of [home, personalRepo, namedRepo]) fs.mkdirSync(dir);
+  process.env.CODEX_HOME = home;
+  const observed: string[] = [];
+  const server = http.createServer((req, res) => {
+    observed.push(String(req.headers.authorization));
+    req.resume();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end("{}");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const endpoint = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const personalKey = "cot_synthetic_personal_000000000000000";
+  const config = path.join(home, "config.toml");
+  fs.writeFileSync(config, `[otel]\nexporter = { otlp-http = { endpoint = "${endpoint}/v1/logs", headers = { authorization = "Bearer ${personalKey}" } } }\n`);
+  const helper = path.join(home, REPOSITORY_HOOK_FILE);
+  // Snapshot from the public @codetelemetry/connect@0.1.5 npm artifact.
+  const legacy = fs.readFileSync(new URL("./fixtures/legacyCodexRepositoryHook.cjs", import.meta.url), "utf8")
+    .replace(JSON.stringify("/SYNTHETIC_CONFIG"), JSON.stringify(config));
+  fs.writeFileSync(helper, legacy, { mode: 0o700 });
+  const definitions = '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"existing trusted hook"}]}]}}';
+  const hooksFile = path.join(home, "hooks.json");
+  fs.writeFileSync(hooksFile, definitions);
+  const profileHook = path.join(process.env.CODETELEMETRY_CONTEXT_HOME!, `${context.name}.hook.cjs`);
+  const priorHook = fs.existsSync(profileHook) ? fs.readFileSync(profileHook) : null;
+  const runHook = async (file: string, cwd: string, workspace?: string) => {
+    const env = { ...process.env };
+    delete env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    delete env.OTEL_EXPORTER_OTLP_HEADERS;
+    delete env.CODETELEMETRY_WORKSPACE;
+    if (workspace) env.CODETELEMETRY_WORKSPACE = workspace;
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(process.execPath, [file], { cwd, env, stdio: ["pipe", "ignore", "ignore"] });
+      child.once("error", reject);
+      child.once("exit", (code) => code === 0 ? resolve() : reject(new Error("Observer process failed.")));
+      child.stdin.end(JSON.stringify({ cwd, session_id: "synthetic-migration", hook_event_name: "SessionStart" }));
+    });
+  };
+  try {
+    await runHook(helper, personalRepo);
+    assert.deepEqual(observed, [`Bearer ${personalKey}`]);
+    const scoped = { ...context, ingestEndpoint: endpoint };
+    writeCodexWorkspaceProfile(scoped, { repositoryObservation: true });
+    assert.equal(fs.readFileSync(hooksFile, "utf8"), definitions);
+    await runHook(helper, personalRepo, context.name);
+    bindWorkspace(namedRepo, scoped);
+    await runHook(helper, namedRepo);
+    assert.equal(observed.length, 1, "global observer must not send workspace evidence to personal scope");
+    await runHook(profileHook, namedRepo);
+    assert.deepEqual(observed, [`Bearer ${personalKey}`, `Bearer ${context.ingestKey}`]);
+    await runHook(helper, personalRepo);
+    assert.equal(observed.at(-1), `Bearer ${personalKey}`);
+    writeCodexWorkspaceProfile(scoped, { repositoryObservation: false });
+    await runHook(helper, namedRepo);
+    assert.equal(observed.length, 3, "workspace opt-out cannot inherit a legacy global observer");
+    const modified = legacy + "\n// independently modified helper\n";
+    fs.writeFileSync(helper, modified, { mode: 0o600 });
+    assert.throws(() => writeCodexWorkspaceProfile(scoped), /differs from a recognized client release/);
+    assert.equal(fs.readFileSync(helper, "utf8"), modified);
+    assert.equal(fs.readFileSync(hooksFile, "utf8"), definitions);
+  } finally {
+    process.env.CODEX_HOME = previousHome;
+    if (priorHook) fs.writeFileSync(profileHook, priorHook); else fs.rmSync(profileHook, { force: true });
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });
 test("personal context reauthorization remains personal and installs a bound Claude MCP entry", async () => {
   const name = "personal",

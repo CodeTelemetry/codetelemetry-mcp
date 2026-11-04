@@ -100,8 +100,13 @@ opt-in. It does not rewrite the base config or copy auth tokens. The profile als
 the standard global CodeTelemetry MCP entry for that profile. Claude receives a
 project `.mcp.json` entry bound to the same context. Optional Codex observation
 hooks live in the profile and run only when it is selected.
+Codex combines global and profile hooks. Bootstrap upgrades recognized older
+CodeTelemetry observation helpers so they abstain in named workspaces; global
+hook definitions and personal reporting are preserved. Modified helpers require
+review before configuration continues. When opting into new observation hooks,
+review and trust them in Codex's `/hooks` interface before expecting observations.
 See [OpenAI configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)
-and [profiles](https://learn.chatgpt.com/docs/config-file/config-advanced#profiles).
+and [hooks](https://learn.chatgpt.com/docs/hooks).
 Secret-bearing project paths are added to `.gitignore` before configuration.
 
 A requested GitHub gate produces its generated workflow locally. Bootstrap then

@@ -105,7 +105,7 @@ export function selectCodexOtelExporterLine(raw: string): string {
  * Failures are deliberately silent and non-blocking: raw client telemetry and
  * repository inference remain available, and reconciliation cannot repair an
  * observation the client never emitted. */
-export function repositoryHookSource(options: { codexConfigPath?: string } = {}): string {
+export function repositoryHookSource(options: { codexConfigPath?: string; workspaceName?: string } = {}): string {
   const codexConfigPath = options.codexConfigPath
     ? path.resolve(options.codexConfigPath)
     : "";
@@ -117,6 +117,7 @@ const https = require("node:https");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const codexConfigPath = ${JSON.stringify(codexConfigPath)};
+const workspaceName = ${JSON.stringify(options.workspaceName ?? "")};
 const observationStatePath = path.join(__dirname, ${JSON.stringify(REPOSITORY_HOOK_STATE_FILE)});
 const observationLockPath = observationStatePath + ".lock";
 const maxObservationStateEntries = ${REPOSITORY_HOOK_STATE_MAX_ENTRIES};
@@ -344,6 +345,36 @@ function permitsAuthorization(url, headers) {
 async function main() {
   let input = {};
   try { input = JSON.parse(fs.readFileSync(0, "utf8") || "{}"); } catch {}
+  // Codex merges global and profile hooks. The legacy global observer must
+  // abstain in named workspaces; only that workspace's opt-in hook may report.
+  if (codexConfigPath) {
+    const selectedWorkspace = String(process.env.CODETELEMETRY_WORKSPACE || "");
+    if (selectedWorkspace && selectedWorkspace !== workspaceName) return;
+    let directory = path.resolve(String(input.new_cwd || input.cwd || process.cwd()));
+    for (let depth = 0; depth < 64; depth++) {
+      const binding = path.join(directory, ".codetelemetry", "workspace.json");
+      if (fs.existsSync(binding)) {
+        if (!workspaceName) return;
+        try {
+          const fd = fs.openSync(binding, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+          try {
+            const st = fs.fstatSync(fd);
+            if (!st.isFile() || st.size > 65536) return;
+            const bytes = Buffer.alloc(65537);
+            const count = fs.readSync(fd, bytes, 0, bytes.length, 0);
+            if (count > 65536) return;
+            const stored = JSON.parse(bytes.subarray(0, count).toString("utf8"));
+            if (stored.version !== 1 || stored.name !== workspaceName) return;
+          } finally { fs.closeSync(fd); }
+        } catch { return; }
+        break;
+      }
+      const parent = path.dirname(directory);
+      if (parent === directory || fs.existsSync(path.join(directory, ".git"))) break;
+      if (depth === 63) return;
+      directory = parent;
+    }
+  }
   const destination = deliveryDestination();
   let url;
   try { url = new URL(destination.endpoint); } catch { return; }
