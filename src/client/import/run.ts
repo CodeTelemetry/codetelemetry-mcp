@@ -17,6 +17,7 @@ import {
   importPrepared,
   prepareSession,
   resolveWindow,
+  underProject,
   type ContentBySource,
   type ImportRunResult,
   type ImportSourceSummary,
@@ -27,6 +28,7 @@ import {
   defaultClaudeProjectsDir,
   defaultCodexSessionsDir,
   parseCandidate,
+  candidateProjectDirectory,
   scanClaudeSessions,
   scanCodexSessions,
   type SessionCandidate,
@@ -68,6 +70,8 @@ export type ImportRunOptions = {
   previewOnly?: boolean;
   /** Exact plans selected from a saved preview; changed content is never uploaded. */
   selectedPlans?: Readonly<Record<string, string>>;
+  /** Saved workspace MCP calls share the same bounded project discovery. */
+  boundedDiscovery?: boolean;
   /** Cap sessions sent this run; the rest are reported as `remaining`. */
   maxSessions?: number;
   ratePerMinute?: number;
@@ -106,10 +110,10 @@ export async function runImport(opts: ImportRunOptions): Promise<ImportRunResult
   const wantCodex = !opts.source || opts.source === "all" || opts.source === "codex";
   const summaries = new Map<ImportSource, ImportSourceSummary>();
   const found: SessionCandidate[] = [];
-  const boundedSelection = Boolean(opts.previewOnly || opts.selectedPlans);
+  const boundedSelection = Boolean(opts.previewOnly || opts.selectedPlans || opts.boundedDiscovery);
   const scanBudget = boundedSelection ? { remainingEntries: 10_000, deadline: Date.now() + 120_000 } : undefined;
-  const parseLimits = scanBudget ? { deadline: scanBudget.deadline, maxBytes: 64 * 1024 * 1024 } : undefined;
-  let parsedBytes = 0;
+  const readBudget = scanBudget ? { remainingBytes: 128 * 1024 * 1024, deadline: scanBudget.deadline } : undefined;
+  const parseLimits = scanBudget ? { deadline: scanBudget.deadline, maxBytes: 64 * 1024 * 1024, budget: readBudget } : undefined;
   if (wantClaude) {
     const s = emptySummary("claude-code");
     summaries.set("claude-code", s);
@@ -149,8 +153,10 @@ export async function runImport(opts: ImportRunOptions): Promise<ImportRunResult
       bump(s, "active");
       continue;
     }
-    if (boundedSelection && (parsedBytes += c.bytes) > 128 * 1024 * 1024)
-      throw new Error("History preview reached its 128 MiB read bound; narrow --since and preview again.");
+    if (readBudget && opts.project) {
+      const cwd = candidateProjectDirectory(c, readBudget);
+      if (cwd && !underProject(cwd, opts.project, prepareOpts.caseInsensitivePaths)) { bump(s, "filtered"); continue; }
+    }
     const parsed = await parseCandidate(c, content[c.source], parseLimits);
     if (!parsed.ok) {
       bump(s, parsed.reason);

@@ -1919,6 +1919,7 @@ export const TOOLS: ToolDef[] = [
           codexConfig: ctx.configPathsOverride?.codex ?? CLIENTS.codex.resolveConfigPath({}),
         }),
         dryRun: args.dryRun !== false,
+        boundedDiscovery: Boolean(ctx.workspace),
         maxSessions,
         timeLimitMs: IMPORT_TIME_LIMIT_MS,
         importTool: "mcp",
