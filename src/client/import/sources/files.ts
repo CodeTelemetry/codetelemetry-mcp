@@ -7,6 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
+import { StringDecoder } from "node:string_decoder";
 import type { ContentPolicy, ImportSource, ImportedSession } from "../model.ts";
 import { ClaudeSessionAccumulator } from "./claudeCodeText.ts";
 import { CodexSessionAccumulator, codexSessionIdFromName } from "./codexText.ts";
@@ -48,6 +49,45 @@ const statOrNull = (p: string): fs.Stats | null => {
 };
 
 export type ScanBudget = { remainingEntries: number; deadline: number };
+export type HistoryReadBudget = { remainingBytes: number; deadline: number };
+export class HistoryReadBudgetError extends Error {}
+
+/** Read only enough metadata to identify the same first cwd as the parser.
+ * Unknown or truncated headers fall back to the full parser, never omission.
+ * This prevents unrelated multi-megabyte transcripts consuming a project's
+ * entire read budget. Header bytes count against that same shared budget. */
+export function candidateProjectDirectory(c: SessionCandidate, budget: HistoryReadBudget): string | null {
+  const decoder = new StringDecoder("utf8");
+  const buffer = Buffer.allocUnsafe(4096);
+  let pending = "", consumed = 0;
+  const cwdOf = (line: string): string | null => {
+    try {
+      const row = JSON.parse(line);
+      const cwd = c.source === "claude-code" ? row?.cwd
+        : row?.type === "session_meta" || row?.type === "turn_context" ? row?.payload?.cwd : null;
+      return typeof cwd === "string" && cwd ? cwd : null;
+    } catch { return null; }
+  };
+  let fd: number;
+  try { fd = fs.openSync(c.file, "r"); } catch { return null; }
+  try {
+    while (consumed < Math.min(c.bytes, 256 * 1024)) {
+      if (Date.now() >= budget.deadline) throw new HistoryReadBudgetError("History discovery reached its time bound; narrow --since and preview again.");
+      if (budget.remainingBytes <= 0) throw new HistoryReadBudgetError("History preview reached its 128 MiB read bound; narrow --since and preview again.");
+      const take = Math.min(buffer.length, c.bytes - consumed, 256 * 1024 - consumed, budget.remainingBytes);
+      const count = fs.readSync(fd, buffer, 0, take, consumed);
+      if (!count) break;
+      consumed += count; budget.remainingBytes -= count;
+      pending += decoder.write(buffer.subarray(0, count));
+      let end: number;
+      while ((end = pending.indexOf("\n")) >= 0) {
+        const cwd = cwdOf(pending.slice(0, end)); pending = pending.slice(end + 1);
+        if (cwd) return cwd;
+      }
+    }
+    return cwdOf(pending + decoder.end());
+  } finally { fs.closeSync(fd); }
+}
 const readDir = (dir: string, budget?: ScanBudget): fs.Dirent[] => {
   if (budget) {
     let handle: fs.Dir;
@@ -128,12 +168,25 @@ export function scanCodexSessions(sessionsDir: string, budget?: ScanBudget): Ses
   return out.sort((a, b) => a.file.localeCompare(b.file));
 }
 
-async function feedLines(file: string, onLine: (line: string) => void, deadline?: number): Promise<void> {
-  const stream = fs.createReadStream(file, { encoding: "utf8" });
+async function feedLines(file: string, onLine: (line: string) => void, remaining: { bytes: number }, limits?: { deadline: number; budget?: HistoryReadBudget }): Promise<void> {
+  // One overflow byte detects a growing file without accepting a truncated
+  // session. Physical reads and readline's longest line remain bounded too.
+  const stream = fs.createReadStream(file, { highWaterMark: 16 * 1024,
+    end: Math.min(remaining.bytes, limits?.budget?.remainingBytes ?? remaining.bytes) });
+  stream.on("data", (chunk) => {
+    const bytes = typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.length;
+    remaining.bytes -= bytes;
+    if (limits?.budget) limits.budget.remainingBytes -= bytes;
+    if (limits?.budget && limits.budget.remainingBytes < 0)
+      stream.destroy(new HistoryReadBudgetError("History preview reached its 128 MiB read bound; narrow --since and preview again."));
+    else if (remaining.bytes < 0) stream.destroy(new Error("Session grew beyond its byte bound; preview it again."));
+    else if (limits && Date.now() >= limits.deadline)
+      stream.destroy(new HistoryReadBudgetError("History parsing reached its time bound; narrow --since and preview again."));
+  });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   try {
     for await (const line of rl) {
-      if (deadline !== undefined && Date.now() >= deadline) throw new Error("History parsing reached its time bound.");
+      if (limits && Date.now() >= limits.deadline) throw new HistoryReadBudgetError("History parsing reached its time bound.");
       onLine(line);
     }
   } finally {
@@ -147,18 +200,20 @@ export type ParseOutcome =
   | { ok: false; reason: "too_large" | "too_many_events" | "unreadable"; detail: string };
 
 /** Stream one candidate's files through its parser. */
-export async function parseCandidate(c: SessionCandidate, keep: ContentPolicy, limits?: { deadline: number; maxBytes: number }): Promise<ParseOutcome> {
+export async function parseCandidate(c: SessionCandidate, keep: ContentPolicy, limits?: { deadline: number; maxBytes: number; budget?: HistoryReadBudget }): Promise<ParseOutcome> {
   const byteLimit = Math.min(MAX_SESSION_FILE_BYTES, limits?.maxBytes ?? MAX_SESSION_FILE_BYTES);
   if (c.bytes > byteLimit) {
     return { ok: false, reason: "too_large", detail: `${c.bytes} bytes exceeds the ${byteLimit}-byte session bound` };
   }
   const acc = c.source === "claude-code" ? new ClaudeSessionAccumulator({ keep }) : new CodexSessionAccumulator({ keep });
+  const remaining = { bytes: byteLimit };
   try {
     for (const f of [c.file, ...c.extraFiles]) {
-      await feedLines(f, (line) => acc.line(line), limits?.deadline);
+      await feedLines(f, (line) => acc.line(line), remaining, limits);
       if (acc.overflowed) break;
     }
   } catch (err) {
+    if (err instanceof HistoryReadBudgetError) throw err;
     return { ok: false, reason: "unreadable", detail: err instanceof Error ? err.message : String(err) };
   }
   if (acc.overflowed) return { ok: false, reason: "too_many_events", detail: "session exceeds the per-session event bound" };

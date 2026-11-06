@@ -86,11 +86,18 @@ test("workspace import previews locally, fences destination, selects exact plans
     if (entry.isDirectory()) walk(file);
     else { fs.writeFileSync(file, fs.readFileSync(file, "utf8").replaceAll("/work/svc", project)); fs.utimesSync(file, Date.parse("2026-10-03") / 1000, Date.parse("2026-10-03") / 1000); }
   } }; walk(history);
+  // A busy machine can have enormous transcripts for unrelated projects.
+  // Their cheap metadata must exclude them before charging a full-file read.
+  const unrelated = path.join(history, "rollout-unrelated.jsonl");
+  fs.writeFileSync(unrelated, JSON.stringify({ type: "session_meta", payload: { id: "unrelated", cwd: "/another-project" } }) + "\n");
+  fs.truncateSync(unrelated, 200 * 1024 * 1024);
+  fs.utimesSync(unrelated, Date.parse("2026-10-03") / 1000, Date.parse("2026-10-03") / 1000);
   const injected = { codexDir: history, ledgerPath: path.join(root, "history-ledger.json"), nowMs: Date.parse("2026-10-10T12:00:00Z"), sleep: async () => {} };
   const preview = await importWorkspaceHistory({ name: context.name, preview: true }, {
     ...injected, fetchImpl: async () => { throw new Error("A preview must never use the network."); },
   });
   assert.equal(preview.previewSessions?.length, 2);
+  assert.equal(preview.sources[0].skipped.filtered, 1);
   assert.equal(preview.content.codex.prompts, true);
   assert.equal(fs.existsSync(injected.ledgerPath), false);
   const serializedPreview = fs.readFileSync(path.join(workspaceHome(), `${context.name}.import-preview.json`), "utf8");
