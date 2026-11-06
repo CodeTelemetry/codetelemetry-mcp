@@ -8,6 +8,8 @@
 // CLI prints it masked and never echoes the plaintext.
 
 import fs from "node:fs";
+import { joinOrganization, workspaceProject } from "./join.ts";
+import { importWorkspaceHistory } from "./workspaceImport.ts";
 import { bootstrapWorkspace, type BootstrapOptions } from "./bootstrap.ts";
 import { listWorkspaces, loadWorkspace, bindWorkspace, bindingOf, findWorkspaceBinding, sameWorkspace, writeCodexWorkspaceProfile } from "./workspaces.ts";
 import { runKiroCommand } from "./kiro/command.ts";
@@ -62,6 +64,12 @@ function parse(argv: string[]): Parsed {
 const HELP = `codetelemetry-connect — wire Claude Code, OpenAI Codex or pi into CodeTelemetry
 
 Usage:
+  codetelemetry-connect join --organization-id ID --client claude|codex [--project PATH]
+                         Connect this project; resume the same command after interruption.
+  codetelemetry-connect import --workspace NAME --preview
+                         Preview this project's past sessions locally; nothing uploads.
+  codetelemetry-connect import --workspace NAME --select 1,2 --confirm
+                         Import selected sessions from the latest preview.
   codetelemetry-connect <cot_key> [options]   Write config, send a test event, confirm it landed
   codetelemetry-connect run <name> -- <coding-client arguments>
                          Start the coding client with this context and isolated telemetry.
@@ -435,14 +443,15 @@ async function runImportCommand(
 
 export async function run(argv: string[]): Promise<number> {
   if(argv[0]==="run") {
-    const context=loadWorkspace(argv[1]);const binding=findWorkspaceBinding();
+    const context=loadWorkspace(argv[1]);const binding=findWorkspaceBinding(process.cwd(), context.name);
     if(binding&&!sameWorkspace(binding,context))throw new Error("Selected context conflicts with this repository.");
     const verified=await verifyScope({key:context.ingestKey,connectivityUrl:resolveEndpoints({apiBase:context.apiBase}).connectivityUrl,expected:context.scope});
     if(verified.state!=="scope_verified")throw new Error(`Workspace is not ready to run: ${verified.state}.`);
     const client=context.clientConfig?.client??"codex";
     const args=argv.slice(argv[2]==="--"?3:2);
     if(client==="codex")writeCodexWorkspaceProfile(context,context.clientConfig);
-    const child=spawn(client,client==="codex"?["--profile",`codetelemetry-${context.name}`,...args]:args,{stdio:"inherit",env:{...process.env,CODETELEMETRY_WORKSPACE:context.name}});
+    if (args.some(arg => arg === "-C" || arg === "--cd" || arg.startsWith("--cd="))) throw new Error("Run uses the saved project directory; connect a different project before changing it.");
+    const child=spawn(client,client==="codex"?["--profile",`codetelemetry-${context.name}`,...args]:args,{cwd:workspaceProject(context),stdio:"inherit",env:{...process.env,CODETELEMETRY_WORKSPACE:context.name}});
     return await new Promise<number>((resolve,reject)=>{child.once("error",()=>reject(new Error("Coding client could not start; check its installation.")));child.once("exit",code=>resolve(code??1));});
   }
   const { _, flags } = parse(argv);
@@ -451,6 +460,43 @@ export async function run(argv: string[]): Promise<number> {
   if (flags.help || flags.h || cmd === "help") {
     out(HELP);
     return 0;
+  }
+
+  if (cmd === "join") {
+    const rogue = unknownFlag(flags, new Set(["organization-id", "client", "project", "enrich", "reauthorize", "open", "json", "api-base"]));
+    if (rogue) throw new Error(`Unknown join option --${rogue}.`);
+    if (typeof flags["organization-id"] !== "string" || (flags.client !== "claude" && flags.client !== "codex") ||
+      (flags.project !== undefined && typeof flags.project !== "string") ||
+      (flags.enrich !== undefined && typeof flags.enrich !== "boolean") ||
+      (flags.reauthorize !== undefined && typeof flags.reauthorize !== "boolean")) throw new Error("Use join --organization-id ID --client claude|codex [--project PATH].");
+    const result = await joinOrganization({ organizationId: flags["organization-id"], client: flags.client,
+      repositoryPath: typeof flags.project === "string" ? flags.project : undefined,
+      enrich: typeof flags.enrich === "boolean" ? flags.enrich : undefined,
+      reauthorize: flags.reauthorize === true, apiBase: typeof flags["api-base"] === "string" ? flags["api-base"] : undefined },
+    { interactive: !flags.json, log: flags.json ? undefined : out,
+      open: flags.open !== false && !flags.json ? url => { openBrowser(url); } : undefined });
+    if (flags.json) out(JSON.stringify(result, null, 2));
+    return result.ok ? 0 : 2;
+  }
+  if (cmd === "import" && flags.workspace !== undefined) {
+    const rogue = unknownFlag(flags, new Set(["workspace", "preview", "select", "confirm", "since", "json"]));
+    if (rogue) throw new Error(`Unknown workspace-import option --${rogue}; destination and content come from the saved workspace.`);
+    if (typeof flags.workspace !== "string" || (flags.preview !== undefined && typeof flags.preview !== "boolean") ||
+      (flags.confirm !== undefined && typeof flags.confirm !== "boolean") ||
+      (flags.select !== undefined && (typeof flags.select !== "string" || !/^\d+(,\d+)*$/.test(flags.select) || flags.select.length > 400))) throw new Error("Use import --workspace NAME --preview, or --select 1,2 --confirm.");
+    const since = typeof flags.since === "string" ? parseWhen(flags.since, Date.now()) : undefined;
+    if (since === null || (flags.since !== undefined && typeof flags.since !== "string")) throw new Error("--since takes days, hours, or an ISO date.");
+    const result = await importWorkspaceHistory({ name: flags.workspace, preview: flags.preview === true,
+      confirm: flags.confirm === true, selections: typeof flags.select === "string" ? flags.select.split(",").map(Number) : undefined,
+      sinceMs: since });
+    if (flags.json) out(JSON.stringify(result, null, 2));
+    else if (result.previewSessions) {
+      out(`Local preview for ${flags.workspace}: ${result.previewSessions.length} sessions. Nothing uploaded.`);
+      result.previewSessions.forEach((session, i) => out(`${i + 1}. ${session.source} ${session.sessionId} · ${new Date(session.endMs).toISOString()} · ${session.events} events`));
+      if (result.remaining) out(`${result.remaining} additional sessions remain; narrow --since for another preview.`);
+      out(`Import selected numbers: npx -y @codetelemetry/connect@0.3.0 import --workspace ${flags.workspace} --select 1,2 --confirm`);
+    } else out(`Imported ${result.totals.sessions} sessions; ${result.remaining} remain. ${result.errors.slice(0, 3).join(" ")}`);
+    return result.ok ? 0 : 1;
   }
 
   if (cmd === "workspace") {

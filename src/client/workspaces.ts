@@ -9,7 +9,7 @@ import { repositoryHookSource, quotedCommand, REPOSITORY_HOOK_FILE } from "./rep
 import { looksLikeKey } from "./keys.ts";
 import type { KeyScope } from "./connectivity.ts";
 
-export const WORKSPACE_MCP_PACKAGE = "@codetelemetry/mcp@0.4.1";
+export const WORKSPACE_MCP_PACKAGE = "@codetelemetry/mcp@0.5.0";
 export const MAX_WORKSPACE_BYTES = 64 * 1024;
 export const MAX_WORKSPACES = 64;
 export type WorkspaceBinding = {
@@ -434,11 +434,27 @@ export function listWorkspaces(): WorkspaceBinding[] {
 }
 export function findWorkspaceBinding(
   start = process.cwd(),
+  selectedName = process.env.CODETELEMETRY_WORKSPACE,
 ): WorkspaceBinding | null {
   let dir = path.resolve(start);
   for (let depth = 0; depth < 64; depth++) {
     const file = path.join(dir, ".codetelemetry", "workspace.json");
-    if (fs.existsSync(file)) return bindingOf(readWorkspaceFile(file, false));
+    if (fs.existsSync(file)) {
+      const raw = readWorkspaceFile(file, false) as Record<string, unknown>;
+      const primary = bindingOf(raw);
+      if (selectedName && primary.name !== selectedName) {
+        const clients = raw.clientBindings as Record<string, unknown> | undefined;
+        if (clients && typeof clients === "object" && !Array.isArray(clients)) {
+          for (const client of ["claude", "codex"]) {
+            if (clients[client]) {
+              const candidate = bindingOf(clients[client]);
+              if (candidate.name === selectedName) return candidate;
+            }
+          }
+        }
+      }
+      return primary;
+    }
     if (fs.existsSync(path.join(dir, ".git")) || path.dirname(dir) === dir)
       return null;
     dir = path.dirname(dir);
@@ -448,6 +464,7 @@ export function findWorkspaceBinding(
 export function bindWorkspace(
   repositoryPath: string,
   context: WorkspaceBinding,
+  client?: "claude" | "codex",
 ): string {
   const root = fs.realpathSync(repositoryPath);
   if (
@@ -457,13 +474,29 @@ export function bindWorkspace(
   )
     throw new Error("Choose a repository directory.");
   const file = path.join(root, ".codetelemetry", "workspace.json");
-  if (
-    fs.existsSync(file) &&
-    !sameWorkspace(bindingOf(readWorkspaceFile(file, false)), context)
-  )
+  noLinks(file);
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const releaseBinding = workspaceLock(".store");
+  try {
+  const existing = fs.existsSync(file) ? readWorkspaceFile(file, false) as Record<string, unknown> : null;
+  const primary = existing ? bindingOf(existing) : null;
+  const sameDestination = primary && primary.apiBase === context.apiBase &&
+    JSON.stringify(primary.scope) === JSON.stringify(context.scope);
+  const rawClients = existing?.clientBindings;
+  const clientBindings: Record<string, WorkspaceBinding> = {};
+  if (rawClients !== undefined) {
+    if (!rawClients || typeof rawClients !== "object" || Array.isArray(rawClients) ||
+      Object.keys(rawClients).some(key => key !== "claude" && key !== "codex")) throw new Error("Invalid repository client bindings.");
+    for (const [key, value] of Object.entries(rawClients)) clientBindings[key] = bindingOf(value);
+  }
+  if (primary && !sameWorkspace(primary, context) && (!client || !sameDestination ||
+    (clientBindings[client] && !sameWorkspace(clientBindings[client], context))))
     throw new Error(
       "Repository is bound to another workspace; remove its binding explicitly before switching.",
     );
-  writeWorkspaceFile(file, bindingOf(context));
+  if (client) clientBindings[client] = bindingOf(context);
+  writeWorkspaceFile(file, { ...(primary ?? bindingOf(context)),
+    ...(Object.keys(clientBindings).length ? { clientBindings } : {}) });
   return file;
+  } finally { releaseBinding(); }
 }

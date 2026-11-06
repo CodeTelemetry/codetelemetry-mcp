@@ -76,6 +76,7 @@ export type ImportSourceSummary = {
 export type StopReason = "budget" | "auth" | "busy" | "time_limit" | "status_unavailable";
 
 export type ImportRunResult = {
+  previewSessions?: Array<{ source: ImportSource; sessionId: string; planId: string; startMs: number; endMs: number; events: number }>;
   ok: boolean;
   run: string;
   dryRun: boolean;

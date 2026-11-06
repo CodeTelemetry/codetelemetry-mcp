@@ -64,6 +64,10 @@ export type ImportRunOptions = {
   content?: Partial<ContentBySource>;
   /** Parse, check and summarize; send nothing, write nothing. */
   dryRun?: boolean;
+  /** Workspace onboarding's local-only preview; no server calls or ledger writes. */
+  previewOnly?: boolean;
+  /** Exact plans selected from a saved preview; changed content is never uploaded. */
+  selectedPlans?: Readonly<Record<string, string>>;
   /** Cap sessions sent this run; the rest are reported as `remaining`. */
   maxSessions?: number;
   ratePerMinute?: number;
@@ -88,7 +92,7 @@ export async function runImport(opts: ImportRunOptions): Promise<ImportRunResult
   const endpoints = resolveEndpoints(opts.endpoints);
   const now = opts.nowMs ?? Date.now();
   const clock = () => (opts.nowMs === undefined ? Date.now() : opts.nowMs);
-  const dryRun = !!opts.dryRun;
+  const dryRun = !!opts.dryRun || !!opts.previewOnly;
   const warnings: string[] = [];
   const content = contentOrDefault(opts.content);
   const window = resolveWindow(now, opts.sinceMs, opts.untilMs);
@@ -102,17 +106,21 @@ export async function runImport(opts: ImportRunOptions): Promise<ImportRunResult
   const wantCodex = !opts.source || opts.source === "all" || opts.source === "codex";
   const summaries = new Map<ImportSource, ImportSourceSummary>();
   const found: SessionCandidate[] = [];
+  const boundedSelection = Boolean(opts.previewOnly || opts.selectedPlans);
+  const scanBudget = boundedSelection ? { remainingEntries: 10_000, deadline: Date.now() + 120_000 } : undefined;
+  const parseLimits = scanBudget ? { deadline: scanBudget.deadline, maxBytes: 64 * 1024 * 1024 } : undefined;
+  let parsedBytes = 0;
   if (wantClaude) {
     const s = emptySummary("claude-code");
     summaries.set("claude-code", s);
-    const files = scanClaudeSessions(opts.claudeDir ?? defaultClaudeProjectsDir());
+    const files = scanClaudeSessions(opts.claudeDir ?? defaultClaudeProjectsDir(), scanBudget);
     s.filesFound = files.length;
     found.push(...files);
   }
   if (wantCodex) {
     const s = emptySummary("codex");
     summaries.set("codex", s);
-    const files = scanCodexSessions(opts.codexDir ?? defaultCodexSessionsDir());
+    const files = scanCodexSessions(opts.codexDir ?? defaultCodexSessionsDir(), scanBudget);
     s.filesFound = files.length;
     found.push(...files);
   }
@@ -131,6 +139,7 @@ export async function runImport(opts: ImportRunOptions): Promise<ImportRunResult
     sha256Hex,
   };
   for (const c of found) {
+    if ((opts.previewOnly || opts.selectedPlans) && clock() - now > 120_000) throw new Error("History scan reached its two-minute bound; narrow the date window and preview again.");
     const s = summaries.get(c.source)!;
     if (c.mtimeMs < window.sinceMs) {
       bump(s, "older"); // no event can be newer than the file's last write
@@ -140,7 +149,9 @@ export async function runImport(opts: ImportRunOptions): Promise<ImportRunResult
       bump(s, "active");
       continue;
     }
-    const parsed = await parseCandidate(c, content[c.source]);
+    if (boundedSelection && (parsedBytes += c.bytes) > 128 * 1024 * 1024)
+      throw new Error("History preview reached its 128 MiB read bound; narrow --since and preview again.");
+    const parsed = await parseCandidate(c, content[c.source], parseLimits);
     if (!parsed.ok) {
       bump(s, parsed.reason);
       warnings.push(`${c.source} ${c.file}: ${parsed.detail}; not imported`);
@@ -152,13 +163,14 @@ export async function runImport(opts: ImportRunOptions): Promise<ImportRunResult
     }
     s.sessionsParsed++;
     const sessionKey = sessionKeyOf(parsed.session.source, parsed.session.sessionId);
+    if (opts.selectedPlans && !Object.prototype.hasOwnProperty.call(opts.selectedPlans, sessionKey)) continue;
     const done = ledger.get(hash, sessionKey);
     if (done && done.state === "complete" && done.fileSig === c.fileSig) {
       bump(s, "ledger");
       continue;
     }
     const reload = async () => {
-      const again = await parseCandidate(c, content[c.source]);
+      const again = await parseCandidate(c, content[c.source], parseLimits);
       return again.ok ? again.session : null;
     };
     const p = await prepareSession(parsed.session, c.fileSig, reload, prepareOpts);
@@ -166,6 +178,8 @@ export async function runImport(opts: ImportRunOptions): Promise<ImportRunResult
       bump(s, p);
       continue;
     }
+    if (opts.selectedPlans && opts.selectedPlans[sessionKey] !== p.plan.id)
+      throw new Error("A selected session changed since preview. Preview it again before importing.");
     if (seen.has(sessionKey)) {
       warnings.push(`${sessionKey} appears in more than one file; only the first is imported`);
       continue;
@@ -176,6 +190,19 @@ export async function runImport(opts: ImportRunOptions): Promise<ImportRunResult
   }
 
   // 3. Status → decide → send.
+  if (opts.previewOnly) {
+    const selected = prepared.sort((a, b) => b.endMs - a.endMs).slice(0, 100);
+    return {
+      ok: true, run: randomUUID(), dryRun: true, key: { masked: mask(key), keyHash: hash },
+      window: { sinceIso: new Date(window.sinceMs).toISOString(), untilIso: new Date(window.untilMs).toISOString(), clamped: window.clamped },
+      content, sources: [...summaries.values()],
+      totals: { sessions: selected.length, events: selected.reduce((n, p) => n + p.plan.events, 0),
+        metricPoints: selected.reduce((n, p) => n + p.plan.metricPoints, 0) },
+      remaining: Math.max(0, prepared.length - selected.length), stoppedBy: null, cleanup: [], warnings, errors: [],
+      previewSessions: selected.map(p => ({ source: p.source, sessionId: p.sessionId, planId: p.plan.id,
+        startMs: p.startMs, endMs: p.endMs, events: p.plan.events })),
+    };
+  }
   try {
     return await importPrepared(prepared, {
       ...prepareOpts,
