@@ -9,6 +9,8 @@ export const PUBLIC_MODULES = [
   "src/workspaceRuntime",
   "src/client/workspaces",
   "src/client/bootstrap",
+  "src/client/join",
+  "src/client/workspaceImport",
   "src/client/bootstrapGitHub",
   "src/version",
   "src/client/agent",

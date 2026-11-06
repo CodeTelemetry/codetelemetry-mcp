@@ -17,7 +17,7 @@ export const PROBE_EVENT = "codetelemetry_probe";
 export const PROBE_SERVICE = "codetelemetry-connect";
 
 /** Build the OTLP/HTTP JSON body for a single probe log record. */
-export function buildProbeLog(probeId: string, nowMs: number = Date.now()): unknown {
+export function buildProbeLog(probeId: string, nowMs: number = Date.now(), context?: { project: string; client: "claude" | "codex" }): unknown {
   const nano = String(BigInt(Math.floor(nowMs)) * 1_000_000n);
   return {
     resourceLogs: [
@@ -25,6 +25,7 @@ export function buildProbeLog(probeId: string, nowMs: number = Date.now()): unkn
         resource: {
           attributes: [
             { key: "service.name", value: { stringValue: PROBE_SERVICE } },
+            ...(context ? [{ key: "project.path", value: { stringValue: context.project } }] : []),
           ],
         },
         scopeLogs: [
@@ -40,6 +41,7 @@ export function buildProbeLog(probeId: string, nowMs: number = Date.now()): unkn
                 attributes: [
                   { key: "event.name", value: { stringValue: PROBE_EVENT } },
                   { key: PROBE_ATTR, value: { stringValue: probeId } },
+                  ...(context ? [{ key: "codetelemetry.probe.client", value: { stringValue: context.client } }] : []),
                 ],
               },
             ],
@@ -57,6 +59,7 @@ export type SendTestResult = {
 };
 
 export type SendTestOptions = {
+  context?: { project: string; client: "claude" | "codex" };
   key: string;
   ingestEndpoint: string;
   probeId?: string;
@@ -80,7 +83,7 @@ export async function sendTestEvent(opts: SendTestOptions): Promise<SendTestResu
         "content-type": "application/json",
         authorization: `Bearer ${key}`,
       },
-      body: JSON.stringify(buildProbeLog(probeId)),
+      body: JSON.stringify(buildProbeLog(probeId, Date.now(), opts.context)),
       signal: ac.signal,
     });
     return { probeId, httpStatus: res.status, ok: res.status >= 200 && res.status < 300 };

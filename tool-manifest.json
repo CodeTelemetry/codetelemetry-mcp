@@ -1,7 +1,7 @@
 {
   "serverName": "codetelemetry",
-  "serverVersion": "0.4.1",
-  "registryHash": "217ada41e87180ec24e8e8d96108a2e52dfc5eae0c4007aa313eac6a11b7ece8",
+  "serverVersion": "0.5.0",
+  "registryHash": "02a9df0bc3beeaca326034cb7ed4584556d52b76746506ad0ecc3ee2193554ab",
   "toolCount": 30,
   "tools": [
     {
@@ -1703,7 +1703,7 @@
     {
       "name": "import_history",
       "title": "Import past Claude Code / Codex sessions",
-      "description": "Use this when the user wants their EXISTING local Claude Code or Codex history (sessions from before CodeTelemetry was set up) to show in CodeTelemetry. It reads ~/.claude/projects and ~/.codex/sessions on this machine and sends them through the normal ingest under the session's key, tagged as imported. ALWAYS call it first with dryRun true (the default) and show the user the summary — sessions, tokens, what is skipped and the content setting — then ask before calling again with dryRun false. Sessions already captured live or already imported are skipped; an interrupted import resumes. Each call sends at most maxSessions; while `remaining` > 0, call again. Imported history has tokens, prompts and tool results but no per-request latency, retries, permission decisions or active time. content defaults to live: exactly the prompt / tool text the user's live exporters are configured to send (Claude OTEL_LOG_USER_PROMPTS / OTEL_LOG_TOOL_DETAILS, Codex log_user_prompt); none sends no text; all sends prompt text and tool inputs regardless — only with the user's explicit agreement.",
+      "description": "Use this when the user wants their EXISTING local Claude Code or Codex history (sessions from before CodeTelemetry was set up) to show in CodeTelemetry. It reads ~/.claude/projects and ~/.codex/sessions on this machine and sends them through the normal ingest under the session's key, tagged as imported. ALWAYS call it first with dryRun true (the default) and show the user the summary — sessions, tokens, what is skipped and the content setting — then ask before calling again with dryRun false. Sessions already captured live or already imported are skipped; an interrupted import resumes. Each call sends at most maxSessions; while `remaining` > 0, call again. A persistent workspace restricts imports to its bound project and coding client; it never falls back to a personal or machine-wide destination. Imported history has tokens, prompts and tool results but no per-request latency, retries, permission decisions or active time. content defaults to live: exactly the prompt / tool text the user's live exporters are configured to send (Claude OTEL_LOG_USER_PROMPTS / OTEL_LOG_TOOL_DETAILS, Codex log_user_prompt); none sends no text; all sends prompt text and tool inputs regardless — only with the user's explicit agreement.",
       "inputSchema": {
         "type": "object",
         "properties": {

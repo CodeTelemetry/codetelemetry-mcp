@@ -8,7 +8,8 @@
 //  - Errors are returned as { ok:false, error, message } (never thrown secrets).
 
 import { workspaceTools, restoreWorkspace } from "./workspaceRuntime.ts";
-import type { WorkspaceBinding } from "./client/workspaces.ts";
+import { loadWorkspace, type WorkspaceBinding } from "./client/workspaces.ts";
+import { workspaceProject } from "./client/join.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1871,6 +1872,7 @@ export const TOOLS: ToolDef[] = [
       "It reads ~/.claude/projects and ~/.codex/sessions on this machine and sends them through the normal ingest under the session's key, tagged as imported. " +
       "ALWAYS call it first with dryRun true (the default) and show the user the summary — sessions, tokens, what is skipped and the content setting — then ask before calling again with dryRun false. " +
       "Sessions already captured live or already imported are skipped; an interrupted import resumes. Each call sends at most maxSessions; while `remaining` > 0, call again. " +
+      "A persistent workspace restricts imports to its bound project and coding client; it never falls back to a personal or machine-wide destination. " +
       "Imported history has tokens, prompts and tool results but no per-request latency, retries, permission decisions or active time. " +
       "content defaults to live: exactly the prompt / tool text the user's live exporters are configured to send (Claude OTEL_LOG_USER_PROMPTS / OTEL_LOG_TOOL_DETAILS, Codex log_user_prompt); none sends no text; all sends prompt text and tool inputs regardless — only with the user's explicit agreement.",
     inputSchema: obj({
@@ -1956,6 +1958,15 @@ export async function callTool(name: string, args: Record<string, unknown>, ctx:
       return (ctx.fetchImpl ?? fetch)(url, { ...init, headers });
     }) as FetchLike } : ctx;
     if(ctx.workspaceClient && ["status","onboard","write_local_config"].includes(name) && args.client===undefined) args={...args,client:ctx.workspaceClient};
+    if (ctx.workspace && name === "import_history") {
+      const saved = loadWorkspace(ctx.workspace.name);
+      const project = workspaceProject(saved);
+      const selected = typeof args.project === "string" ? path.resolve(args.project) : project;
+      if (selected !== project && !selected.startsWith(project + path.sep)) throw new Error("History import must stay inside this workspace's selected project.");
+      const source = saved.clientConfig?.client === "claude" ? "claude-code" : "codex";
+      if (args.source !== undefined && args.source !== source) throw new Error("Choose the workspace for that coding client before importing its history.");
+      args = { ...args, project: selected, source };
+    }
     const result = await tool.handler(args ?? {}, delegate);
     if (name === "status") result.workspace = ctx.workspace ?? null;
     return JSON.parse(scrub(JSON.stringify(result))) as ToolResult;

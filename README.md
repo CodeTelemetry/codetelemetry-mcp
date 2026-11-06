@@ -31,12 +31,54 @@ deterministic (see [Releases & discovery](#releases--discovery)):
 ```json
 {
   "mcpServers": {
-    "codetelemetry": { "command": "npx", "args": ["-y", "--package=@codetelemetry/mcp@0.4.1", "codetelemetry-mcp"] }
+    "codetelemetry": { "command": "npx", "args": ["-y", "--package=@codetelemetry/mcp@0.5.0", "codetelemetry-mcp"] }
   }
 }
 ```
 
 Then just ask the agent: **"Connect me to CodeTelemetry."**
+
+## Join an existing organization
+
+After accepting an invitation, choose **Explore the team’s work** to review existing
+sessions without local setup, or **Connect my coding tool** to record your own work.
+Run the project connection command from the repository you choose:
+
+```sh
+npx -y @codetelemetry/connect@0.3.0 join --organization-id tm_example --client codex --project .
+# For Claude Code, use --client claude.
+```
+
+Join uses the existing organization's ID and your own device approval. It resumes
+a saved connection after interruption, enables prompt/tool capture and repository
+observation for new connections, and preserves existing capture choices. Pass
+`--no-enrich` when making a new connection to opt out. It never creates an organization,
+purchases credits/seats, or executes optional Grader, Terraform or GitHub steps from
+an older bootstrap plan. A conflicting project destination is an error.
+
+Setup prints a saved workspace name and its launch instructions. Claude uses local
+project settings; Codex uses `connect run <name>` to select its named config-file
+profile. An already-open client does not adopt that profile automatically. The
+browser progress link checks your real session, captured prompt, and project
+identity separately from the connection test. Imported history cannot satisfy live
+verification. **My sessions** is scoped to your authenticated ingest ownership;
+**Team sessions** shows the selected organization's activity.
+
+Optional history import uses the saved project and credentials, without a key argument:
+
+```sh
+npx -y @codetelemetry/connect@0.3.0 import --workspace <name> --preview
+# Choose numbers from that preview; no session content uploads until confirmation:
+npx -y @codetelemetry/connect@0.3.0 import --workspace <name> --select 1,2 --confirm
+```
+
+Preview is local-only and defaults to the last 30 days. It keeps at most 100 session
+plans in a private file bounded to 64 KiB and valid for 24 hours. Discovery examines
+at most 10,000 directory entries, parsing reads at most 128 MiB with 64 MiB per session,
+and one scan is bounded to two minutes. Import rechecks destination and exact selected
+plans before uploading, preserves the saved content choice, and reuses deduplication
+and resumable delivery. Narrow `--since` and preview again if a bound is reached.
+Preview files contain identifiers and counts, never credentials or session content.
 
 ## Persistent organization workspaces
 
@@ -73,8 +115,8 @@ member visibility during creation, and administrators can change it in settings.
 `--plan file.json` supplies the same bootstrap fields as the MCP tool, including
 selected Grader checks. CLI exit 2 means setup is waiting for the returned action;
 exit 0 means the requested checks completed. Funding is checked before client
-configuration. No credits or seats are purchased. Content and repository observation
-remain separate explicit opt-ins.
+configuration. No credits or seats are purchased. Capture follows the saved choice;
+repository observation remains a separate setup option (enabled by project join).
 
 Credentials are private version-1 JSON files under
 `$CODETELEMETRY_CONTEXT_HOME/<name>.json`, defaulting to

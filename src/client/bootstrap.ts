@@ -248,6 +248,8 @@ export async function bootstrapWorkspace(
     apiBase?: string;
     fetchImpl?: FetchLike;
     timeoutMs?: number;
+    /** Member connection must never execute a saved plan's optional Grader/IaC/GitHub steps. */
+    connectionOnly?: boolean;
   } = {},
 ) {
   if (
@@ -503,7 +505,7 @@ export async function bootstrapWorkspace(
     state.steps.scope = "verified";
     delete state.steps.funding;
     delete state.steps.telemetry;
-    bindWorkspace(state.plan.repositoryPath, context);
+    bindWorkspace(state.plan.repositoryPath, context, state.plan.client);
     state.steps.repository = "bound";
     checkpoint();
     if (verified.state === "budget_exhausted")
@@ -631,6 +633,7 @@ export async function bootstrapWorkspace(
       Date.now() - state.probe.at > 3_000_000
     ) {
       const sent = await sendTestEvent({
+        context: { project: state.plan.repositoryPath, client: state.plan.client },
         key: context.ingestKey,
         ingestEndpoint: context.ingestEndpoint,
         fetchImpl,
@@ -663,6 +666,9 @@ export async function bootstrapWorkspace(
       );
     state.steps.telemetry = "verified";
     checkpoint();
+    if (environment.connectionOnly) return result("ready", undefined, {
+      scope: context.scope, binding: bindingOf(context), verification: { ingestion: true, liveSession: "not_verified" },
+    });
     if (state.plan.checks?.length) {
       const checks: Record<string, unknown>[] = [];
       let config: Record<string, any> = {};

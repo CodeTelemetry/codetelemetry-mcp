@@ -47,7 +47,21 @@ const statOrNull = (p: string): fs.Stats | null => {
   }
 };
 
-const readDir = (dir: string): fs.Dirent[] => {
+export type ScanBudget = { remainingEntries: number; deadline: number };
+const readDir = (dir: string, budget?: ScanBudget): fs.Dirent[] => {
+  if (budget) {
+    let handle: fs.Dir;
+    try { handle = fs.opendirSync(dir); } catch { return []; }
+    const rows: fs.Dirent[] = [];
+    try {
+      let entry: fs.Dirent | null;
+      while ((entry = handle.readSync())) {
+        if (--budget.remainingEntries < 0 || Date.now() >= budget.deadline) throw new Error("History discovery reached its file/time bound; narrow the local history directory and preview again.");
+        rows.push(entry);
+      }
+    } finally { handle.closeSync(); }
+    return rows;
+  }
   try {
     return fs.readdirSync(dir, { withFileTypes: true });
   } catch {
@@ -76,15 +90,15 @@ function describe(source: ImportSource, file: string, extraFiles: string[]): Ses
  * session's `<sessionId>/subagents/*.jsonl`. Other nested directories hold tool
  * artifacts and memory, not transcripts.
  */
-export function scanClaudeSessions(projectsDir: string): SessionCandidate[] {
+export function scanClaudeSessions(projectsDir: string, budget?: ScanBudget): SessionCandidate[] {
   const out: SessionCandidate[] = [];
-  for (const project of readDir(projectsDir)) {
+  for (const project of readDir(projectsDir, budget)) {
     if (!project.isDirectory()) continue;
     const dir = path.join(projectsDir, project.name);
-    for (const entry of readDir(dir)) {
+    for (const entry of readDir(dir, budget)) {
       if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
       const sessionDir = path.join(dir, entry.name.slice(0, -".jsonl".length), "subagents");
-      const extras = readDir(sessionDir)
+      const extras = readDir(sessionDir, budget)
         .filter((e) => e.isFile() && e.name.endsWith(".jsonl"))
         .map((e) => path.join(sessionDir, e.name))
         .sort()
@@ -97,11 +111,11 @@ export function scanClaudeSessions(projectsDir: string): SessionCandidate[] {
 }
 
 /** Codex rollouts: `<sessions>/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`. */
-export function scanCodexSessions(sessionsDir: string): SessionCandidate[] {
+export function scanCodexSessions(sessionsDir: string, budget?: ScanBudget): SessionCandidate[] {
   const out: SessionCandidate[] = [];
   const walk = (dir: string, depth: number): void => {
     if (depth > 4) return;
-    for (const e of readDir(dir)) {
+    for (const e of readDir(dir, budget)) {
       const full = path.join(dir, e.name);
       if (e.isDirectory()) walk(full, depth + 1);
       else if (e.isFile() && e.name.startsWith("rollout-") && e.name.endsWith(".jsonl")) {
@@ -114,11 +128,14 @@ export function scanCodexSessions(sessionsDir: string): SessionCandidate[] {
   return out.sort((a, b) => a.file.localeCompare(b.file));
 }
 
-async function feedLines(file: string, onLine: (line: string) => void): Promise<void> {
+async function feedLines(file: string, onLine: (line: string) => void, deadline?: number): Promise<void> {
   const stream = fs.createReadStream(file, { encoding: "utf8" });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   try {
-    for await (const line of rl) onLine(line);
+    for await (const line of rl) {
+      if (deadline !== undefined && Date.now() >= deadline) throw new Error("History parsing reached its time bound.");
+      onLine(line);
+    }
   } finally {
     rl.close();
     stream.destroy();
@@ -130,14 +147,15 @@ export type ParseOutcome =
   | { ok: false; reason: "too_large" | "too_many_events" | "unreadable"; detail: string };
 
 /** Stream one candidate's files through its parser. */
-export async function parseCandidate(c: SessionCandidate, keep: ContentPolicy): Promise<ParseOutcome> {
-  if (c.bytes > MAX_SESSION_FILE_BYTES) {
-    return { ok: false, reason: "too_large", detail: `${c.bytes} bytes exceeds the ${MAX_SESSION_FILE_BYTES}-byte session bound` };
+export async function parseCandidate(c: SessionCandidate, keep: ContentPolicy, limits?: { deadline: number; maxBytes: number }): Promise<ParseOutcome> {
+  const byteLimit = Math.min(MAX_SESSION_FILE_BYTES, limits?.maxBytes ?? MAX_SESSION_FILE_BYTES);
+  if (c.bytes > byteLimit) {
+    return { ok: false, reason: "too_large", detail: `${c.bytes} bytes exceeds the ${byteLimit}-byte session bound` };
   }
   const acc = c.source === "claude-code" ? new ClaudeSessionAccumulator({ keep }) : new CodexSessionAccumulator({ keep });
   try {
     for (const f of [c.file, ...c.extraFiles]) {
-      await feedLines(f, (line) => acc.line(line));
+      await feedLines(f, (line) => acc.line(line), limits?.deadline);
       if (acc.overflowed) break;
     }
   } catch (err) {
