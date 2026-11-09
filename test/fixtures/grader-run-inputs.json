@@ -1,0 +1,145 @@
+{
+  "discover_grader_checks": {
+    "type": "object",
+    "properties": {
+      "repository": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512,
+        "description": "Recorded repository label, as returned by search_sessions."
+      },
+      "features": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4000,
+        "description": "Grading focus, for example common tests and static analysis before pushing."
+      },
+      "days": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 30,
+        "description": "History window; defaults to 30 days."
+      },
+      "cohort": {
+        "type": "string",
+        "enum": [
+          "pull_requests",
+          "substantive"
+        ],
+        "description": "Defaults to PR-producing sessions. substantive includes all sessions with observed work."
+      }
+    },
+    "required": [
+      "repository",
+      "features"
+    ],
+    "additionalProperties": false
+  },
+  "backtest_grader_checks": {
+    "type": "object",
+    "properties": {
+      "repository": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512,
+        "description": "Recorded repository label, as returned by search_sessions."
+      },
+      "features": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4000,
+        "description": "Grading focus, for example common tests and static analysis before pushing."
+      },
+      "days": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 30,
+        "description": "History window; defaults to 30 days."
+      },
+      "cohort": {
+        "type": "string",
+        "enum": [
+          "pull_requests",
+          "substantive"
+        ],
+        "description": "Defaults to PR-producing sessions. substantive includes all sessions with observed work."
+      },
+      "discoveryId": {
+        "type": "string",
+        "pattern": "^[a-f0-9-]{36}$"
+      },
+      "candidateIds": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 30,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "pattern": "^[\\w.-]{1,128}$"
+        }
+      },
+      "draftRevision": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      },
+      "checkIds": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 30,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "pattern": "^[\\w.-]{1,128}$"
+        }
+      }
+    },
+    "additionalProperties": false
+  },
+  "get_grader_run": {
+    "type": "object",
+    "properties": {
+      "runId": {
+        "type": "string",
+        "pattern": "^[a-f0-9-]{36}$"
+      },
+      "cursor": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 32
+      }
+    },
+    "required": [
+      "runId"
+    ],
+    "additionalProperties": false
+  },
+  "save_grader_draft": {
+    "type": "object",
+    "properties": {
+      "backtestId": {
+        "type": "string",
+        "pattern": "^[a-f0-9-]{36}$"
+      },
+      "candidateIds": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 30,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "pattern": "^[\\w.-]{1,128}$"
+        }
+      },
+      "expectedRevision": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      }
+    },
+    "required": [
+      "backtestId",
+      "candidateIds",
+      "expectedRevision"
+    ],
+    "additionalProperties": false
+  }
+}

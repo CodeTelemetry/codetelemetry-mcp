@@ -204,6 +204,10 @@ contexts use the established scope-v1 device flow.
 | `seed_grader_config` | Inspect local agent instructions, selected skills, and project task files; return source text and command-check candidates for the user's requested grading focus. Reads files without running commands or uploading them. |
 | `publish_grader_config` | Publish the reviewed draft as a new policy version using its exact revision. Completes setup through MCP; historical scores remain unchanged. |
 | `write_grader_config_artifact` | Write selected checks as Terraform JSON or a standalone Pulumi YAML program, choosing the format from repository context. Refuses overwrites; runs no commands. |
+| `discover_grader_checks` | Discover common checks from recorded repository history; returns an asynchronous run ID. |
+| `backtest_grader_checks` | Backtest candidate IDs or saved draft checks using pinned evidence and the live evaluator. |
+| `get_grader_run` | Read progress, coverage, candidates and paged results, plus the current draft revision. |
+| `save_grader_draft` | Save selected backtested candidates with revision protection; preserves unrelated checks and does not publish. |
 | `get_grader_config` | Read a page of the workspace's Grader draft, its revision, and published version. |
 | `update_grader_config` | Add, update, or remove selected draft checks while preserving others. Records the user's requested instruction features and rejects stale revisions. Use publish_grader_config with the returned revision to apply it to future scoring. |
 | `get_github_pr_gate` | Read the workspace's GitHub PR gate as its settings page shows it: the policy, trusted repositories, the GitHub Actions workflow file to commit, the check to require, outstanding steps, and recent decisions. |
@@ -218,6 +222,25 @@ commit `gate.actions.workflow.content` at `gate.actions.workflow.path` (a PR
 the user merges) → once it has run, the user requires
 `codetelemetry/validation` from GitHub Actions on the default branch (`howTo`
 gives the `gh api` ruleset command to run with their permission).
+
+## Discover and backtest the Grader
+
+For history-based setup, call `discover_grader_checks` with the recorded
+`repository` label and requested `features`. The service defaults to 30 days of
+PR-producing sessions; `cohort: "substantive"` includes all observed work.
+Poll `get_grader_run`, follow `nextCursor`, and review candidate IDs, package
+scope, ambiguities and coverage. Call `backtest_grader_checks` with the discovery
+ID and selected candidate IDs, then poll the new run. Completion and final
+edit-to-push timing are separate verdicts. Unknown and partial evidence remain
+explicit.
+
+Save selected candidates with `save_grader_draft`, passing the backtest ID and
+current `draftRevision` from `get_grader_run` as `expectedRevision`. Saving
+preserves unrelated checks and does not publish or change enforcement. Runs
+expire after 24 hours. Scans, normalization and evaluation run on the service;
+this workflow needs no checkout, shell, custom scripts or client matcher JSON.
+The backend must support the Grader history routes before these tools can run.
+Existing local seeding and direct configuration remain available below.
 
 ## Seed and update the Grader
 
