@@ -1,7 +1,7 @@
 {
   "serverName": "codetelemetry",
   "serverVersion": "0.5.0",
-  "registryHash": "9c87ba7476d8d87db9215e3d60e81891b920db0e7159643d932cc625647dcd73",
+  "registryHash": "c1005d52bbcfce8117309a9d0136156dc149d1938a7a1b1afed2a31339080cdf",
   "toolCount": 34,
   "tools": [
     {
@@ -89,7 +89,8 @@
             "uniqueItems": true,
             "items": {
               "type": "string",
-              "pattern": "^[\\w.-]{1,128}$"
+              "minLength": 1,
+              "maxLength": 128
             }
           },
           "draftRevision": {
@@ -103,7 +104,8 @@
             "uniqueItems": true,
             "items": {
               "type": "string",
-              "pattern": "^[\\w.-]{1,128}$"
+              "minLength": 1,
+              "maxLength": 128
             }
           }
         },
@@ -113,7 +115,7 @@
     {
       "name": "get_grader_run",
       "title": "Read Grader discovery or backtest progress",
-      "description": "Poll a Grader run and follow returned cursors for bounded result pages. Returns progress, pinned window/cohort/evaluator, ranked candidates or check summaries and per-session evidence. Runs expire after 24 hours. Report partial, unknown and stale evidence explicitly; do not treat missing telemetry as a failed check. Access is checked on every call.",
+      "description": "Poll a Grader run and follow returned cursors for bounded result pages. Returns progress, pinned window/cohort/evaluator, ranked candidates or check summaries and per-session evidence. Follow summaryCursor for remaining check summaries, or draftChecksCursor to discover saved check IDs/names for backtesting with the returned draftRevision. Runs expire after 24 hours. Report partial, unknown and stale evidence explicitly; do not treat missing telemetry as a failed check. Access is checked on every call.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -151,7 +153,8 @@
             "uniqueItems": true,
             "items": {
               "type": "string",
-              "pattern": "^[\\w.-]{1,128}$"
+              "minLength": 1,
+              "maxLength": 128
             }
           },
           "expectedRevision": {

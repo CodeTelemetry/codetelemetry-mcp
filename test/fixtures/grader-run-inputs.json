@@ -75,7 +75,8 @@
         "uniqueItems": true,
         "items": {
           "type": "string",
-          "pattern": "^[\\w.-]{1,128}$"
+          "minLength": 1,
+          "maxLength": 128
         }
       },
       "draftRevision": {
@@ -89,7 +90,8 @@
         "uniqueItems": true,
         "items": {
           "type": "string",
-          "pattern": "^[\\w.-]{1,128}$"
+          "minLength": 1,
+          "maxLength": 128
         }
       }
     },
@@ -127,7 +129,8 @@
         "uniqueItems": true,
         "items": {
           "type": "string",
-          "pattern": "^[\\w.-]{1,128}$"
+          "minLength": 1,
+          "maxLength": 128
         }
       },
       "expectedRevision": {

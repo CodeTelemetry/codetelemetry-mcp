@@ -232,7 +232,9 @@ Poll `get_grader_run`, follow `nextCursor`, and review candidate IDs, package
 scope, ambiguities and coverage. Call `backtest_grader_checks` with the discovery
 ID and selected candidate IDs, then poll the new run. Completion and final
 edit-to-push timing are separate verdicts. Unknown and partial evidence remain
-explicit.
+explicit. To backtest existing configuration, follow `draftChecksCursor` from
+`get_grader_run` for saved check IDs/names and the current `draftRevision`, then
+pass that revision, selected `checkIds` and `repository` to `backtest_grader_checks`.
 
 Save selected candidates with `save_grader_draft`, passing the backtest ID and
 current `draftRevision` from `get_grader_run` as `expectedRevision`. Saving
