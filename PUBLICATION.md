@@ -23,6 +23,12 @@ support before npm publication. The authenticated release smoke reads one draft
 check and refuses an absent/incompatible backend; it never changes or publishes
 a customer policy.
 
+History discovery, backtesting, polling and draft saving additionally require
+`/api/agent/grader/{discover,backtest,runs,save-draft}`. The release smoke probes
+all four with requests that the service rejects before creating a job or
+changing a draft. It requires the specific validation/not-found response;
+a generic missing-route 404 or an unconfigured runtime blocks publication.
+
 ## Release preparation
 
 1. Update MCP `package.json` and `src/version.ts` together, and the standalone

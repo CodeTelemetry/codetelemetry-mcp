@@ -1,6 +1,6 @@
 {
   "serverName": "codetelemetry",
-  "serverVersion": "0.5.0",
+  "serverVersion": "0.6.0",
   "registryHash": "c1005d52bbcfce8117309a9d0136156dc149d1938a7a1b1afed2a31339080cdf",
   "toolCount": 34,
   "tools": [
