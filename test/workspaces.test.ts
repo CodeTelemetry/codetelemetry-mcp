@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { REPOSITORY_HOOK_FILE } from "../src/client/repositoryHook.ts";
+import { REPOSITORY_HOOK_FILE, REPOSITORY_HOOK_STATE_FILE } from "../src/client/repositoryHook.ts";
 import {
   saveWorkspace,
   loadWorkspace,
@@ -525,6 +525,28 @@ test("personal context reauthorization remains personal and installs a bound Cla
   assert.ok(!JSON.stringify(mcp).includes(personalKey));
   assert.ok(WORKSPACE_MCP_PACKAGE.endsWith("@" + MCP_SERVER_VERSION));
 });
+test("workspace listing separates hook state from credentials and rejects reserved names", async () => {
+  const previous = process.env.CODETELEMETRY_CONTEXT_HOME;
+  const store = path.join(root, "hook-state-store");
+  process.env.CODETELEMETRY_CONTEXT_HOME = store;
+  try {
+    saveWorkspace(context);
+    const file = path.join(store, REPOSITORY_HOOK_STATE_FILE);
+    writeWorkspaceFile(file, { version: 1, entries: [] });
+    writeWorkspaceFile(path.join(store, `${context.name}.bootstrap.json`), { version: 1, plan: {} });
+    const original = fs.readFileSync(file);
+    assert.deepEqual(listWorkspaces().map(w => w.name), [context.name]);
+    const listed = await callTool("workspace_context", { action: "list" }, { session: new OnboardingSession() });
+    assert.equal(listed.ok, true);
+    assert.ok(!JSON.stringify(listed).includes(context.ingestKey));
+    assert.throws(() => saveWorkspace({ ...context, name: REPOSITORY_HOOK_STATE_FILE.slice(0, -5) }), /reserved/);
+    assert.deepEqual(fs.readFileSync(file), original, "reserved names cannot overwrite hook state");
+    writeWorkspaceFile(path.join(store, "broken.json"), {});
+    assert.throws(() => listWorkspaces(), /Unsupported workspace context version/, "an invalid credential context still fails clearly");
+  } finally {
+    process.env.CODETELEMETRY_CONTEXT_HOME = previous;
+  }
+});
 test("workspace state enforces byte and context-count bounds before accepting more data", () => {
   const file = contextPath(context.name),
     original = fs.readFileSync(file);
@@ -536,6 +558,7 @@ test("workspace state enforces byte and context-count bounds before accepting mo
   try {
     for (let i = 0; i < 64; i++)
       saveWorkspace({ ...context, name: `limit${i}` });
+    writeWorkspaceFile(path.join(process.env.CODETELEMETRY_CONTEXT_HOME!, REPOSITORY_HOOK_STATE_FILE), { version: 1, entries: [] });
     assert.equal(listWorkspaces().length, 64);
     assert.throws(
       () => saveWorkspace({ ...context, name: "overflow" }),

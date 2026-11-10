@@ -5,13 +5,15 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { buildOtelSection } from "./codexConfig.ts";
-import { repositoryHookSource, quotedCommand, REPOSITORY_HOOK_FILE } from "./repositoryHook.ts";
+import { repositoryHookSource, quotedCommand, REPOSITORY_HOOK_FILE, REPOSITORY_HOOK_STATE_FILE } from "./repositoryHook.ts";
 import { looksLikeKey } from "./keys.ts";
 import type { KeyScope } from "./connectivity.ts";
 
 export const WORKSPACE_MCP_PACKAGE = "@codetelemetry/mcp@0.6.0";
 export const MAX_WORKSPACE_BYTES = 64 * 1024;
 export const MAX_WORKSPACES = 64;
+const isContextFile = (name: string): boolean =>
+  /^[a-z][a-z0-9_-]{0,63}\.json$/.test(name) && name !== REPOSITORY_HOOK_STATE_FILE;
 export type WorkspaceBinding = {
   version: 1;
   name: string;
@@ -38,6 +40,8 @@ export function workspaceName(value: unknown): string {
     throw new Error(
       "Workspace name must be 1–64 lowercase letters, digits, underscores or hyphens, starting with a letter.",
     );
+  if (`${value}.json` === REPOSITORY_HOOK_STATE_FILE)
+    throw new Error("Workspace name is reserved for repository-hook state.");
   return value;
 }
 export function workspaceOrigin(value: unknown): string {
@@ -408,7 +412,7 @@ export function saveWorkspace(context: WorkspaceContext): void {
     noLinks(workspaceHome());
     if (
       !fs.existsSync(file) &&
-      workspaceEntries().filter((n) => /^[a-z][a-z0-9_-]{0,63}\.json$/.test(n))
+      workspaceEntries().filter(isContextFile)
         .length >= MAX_WORKSPACES
     )
       throw new Error(
@@ -425,7 +429,7 @@ export function listWorkspaces(): WorkspaceBinding[] {
   const names = workspaceEntries();
   if (names.length > MAX_WORKSPACES * 3)
     throw new Error("Workspace store exceeds its entry bound.");
-  const files = names.filter((n) => /^[a-z][a-z0-9_-]{0,63}\.json$/.test(n));
+  const files = names.filter(isContextFile);
   if (files.length > MAX_WORKSPACES)
     throw new Error("Workspace store exceeds 64 contexts.");
   return files
