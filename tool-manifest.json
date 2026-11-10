@@ -1,7 +1,7 @@
 {
   "serverName": "codetelemetry",
   "serverVersion": "0.6.0",
-  "registryHash": "c1005d52bbcfce8117309a9d0136156dc149d1938a7a1b1afed2a31339080cdf",
+  "registryHash": "491c37a8f144fa1418e3e3ae091e6aac3ace57ef09a675169920d229dda83c7a",
   "toolCount": 34,
   "tools": [
     {
@@ -1485,7 +1485,7 @@
                   "enum": [
                     "signadot"
                   ],
-                  "description": "Links a three-component composite's steps to one Signadot sandbox: the sandbox it was ready in, a request or test routed to it, and that run's result. Never before push. Keep it when re-saving a check read from get_grader_config; dropping it leaves an unlinked composite that any sandbox step and any request satisfy."
+                  "description": "Links a three-component composite to recorded sandbox readiness, an exact routing key and declared endpoint, and a positive validation result. May be required before push after the final edit. Keep it when re-saving a check read from get_grader_config; dropping it leaves an unlinked composite."
                 }
               },
               "required": [
@@ -1747,7 +1747,7 @@
                   "enum": [
                     "signadot"
                   ],
-                  "description": "Links a three-component composite's steps to one Signadot sandbox: the sandbox it was ready in, a request or test routed to it, and that run's result. Never before push. Keep it when re-saving a check read from get_grader_config; dropping it leaves an unlinked composite that any sandbox step and any request satisfy."
+                  "description": "Links a three-component composite to recorded sandbox readiness, an exact routing key and declared endpoint, and a positive validation result. May be required before push after the final edit. Keep it when re-saving a check read from get_grader_config; dropping it leaves an unlinked composite."
                 }
               },
               "required": [
