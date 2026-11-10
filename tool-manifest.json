@@ -1,9 +1,175 @@
 {
   "serverName": "codetelemetry",
-  "serverVersion": "0.5.0",
-  "registryHash": "02a9df0bc3beeaca326034cb7ed4584556d52b76746506ad0ecc3ee2193554ab",
-  "toolCount": 30,
+  "serverVersion": "0.6.0",
+  "registryHash": "c1005d52bbcfce8117309a9d0136156dc149d1938a7a1b1afed2a31339080cdf",
+  "toolCount": 34,
   "tools": [
+    {
+      "name": "discover_grader_checks",
+      "title": "Discover Grader checks from history",
+      "description": "Discover common validation checks for a recorded repository and grading focus. The service selects PR-producing sessions (default), scans bounded canonical history asynchronously and ranks exact normalized commands by distinct sessions. Returns a runId; poll get_grader_run for candidates, package scope, provenance, ambiguities and coverage. No local files or scripts. Partial evidence never proves an absence. Does not change the Grader.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "repository": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "Recorded repository label, as returned by search_sessions."
+          },
+          "features": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000,
+            "description": "Grading focus, for example common tests and static analysis before pushing."
+          },
+          "days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 30,
+            "description": "History window; defaults to 30 days."
+          },
+          "cohort": {
+            "type": "string",
+            "enum": [
+              "pull_requests",
+              "substantive"
+            ],
+            "description": "Defaults to PR-producing sessions. substantive includes all sessions with observed work."
+          }
+        },
+        "required": [
+          "repository",
+          "features"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "backtest_grader_checks",
+      "title": "Backtest Grader checks",
+      "description": "Start an asynchronous backtest using discoveryId plus candidateIds, or draftRevision plus checkIds and repository (optional days/cohort/features). Uses pinned recorded evidence and the live Grader evaluator. Poll get_grader_run for completion and after-last-edit/before-push timing separately, per-session evidence, unknown outcomes and coverage limits. Does not publish or rewrite historical scores.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "repository": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "Recorded repository label, as returned by search_sessions."
+          },
+          "features": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000,
+            "description": "Grading focus, for example common tests and static analysis before pushing."
+          },
+          "days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 30,
+            "description": "History window; defaults to 30 days."
+          },
+          "cohort": {
+            "type": "string",
+            "enum": [
+              "pull_requests",
+              "substantive"
+            ],
+            "description": "Defaults to PR-producing sessions. substantive includes all sessions with observed work."
+          },
+          "discoveryId": {
+            "type": "string",
+            "pattern": "^[a-f0-9-]{36}$"
+          },
+          "candidateIds": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 30,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "draftRevision": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "checkIds": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 30,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_grader_run",
+      "title": "Read Grader discovery or backtest progress",
+      "description": "Poll a Grader run and follow returned cursors for bounded result pages. Returns progress, pinned window/cohort/evaluator, ranked candidates or check summaries and per-session evidence. Follow summaryCursor for remaining check summaries, or draftChecksCursor to discover saved check IDs/names for backtesting with the returned draftRevision. Runs expire after 24 hours. Report partial, unknown and stale evidence explicitly; do not treat missing telemetry as a failed check. Access is checked on every call.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "runId": {
+            "type": "string",
+            "pattern": "^[a-f0-9-]{36}$"
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
+          }
+        },
+        "required": [
+          "runId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "save_grader_draft",
+      "title": "Save selected backtested Grader checks",
+      "description": "Save selected candidates from a completed backtest into the Grader draft, preserving unrelated checks. Use current draftRevision from get_grader_run, or read get_grader_config, for expectedRevision. Refuses changed revisions and unresolved package or operand ambiguities. Returns saved check IDs and a new draft revision. Requires Grader write permission. Does not publish, change enforcement or rewrite stored scores. Never automatically retry an uncertain save; read the draft first.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "backtestId": {
+            "type": "string",
+            "pattern": "^[a-f0-9-]{36}$"
+          },
+          "candidateIds": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 30,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "expectedRevision": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "backtestId",
+          "candidateIds",
+          "expectedRevision"
+        ],
+        "additionalProperties": false
+      }
+    },
     {
       "name": "bootstrap_workspace",
       "title": "Create or resume a workspace setup",

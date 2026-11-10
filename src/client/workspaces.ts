@@ -9,7 +9,7 @@ import { repositoryHookSource, quotedCommand, REPOSITORY_HOOK_FILE } from "./rep
 import { looksLikeKey } from "./keys.ts";
 import type { KeyScope } from "./connectivity.ts";
 
-export const WORKSPACE_MCP_PACKAGE = "@codetelemetry/mcp@0.5.0";
+export const WORKSPACE_MCP_PACKAGE = "@codetelemetry/mcp@0.6.0";
 export const MAX_WORKSPACE_BYTES = 64 * 1024;
 export const MAX_WORKSPACES = 64;
 export type WorkspaceBinding = {

@@ -13,7 +13,7 @@ privacy, client setup and service removal.
 
 ## Organization projects
 
-Use `npx -y @codetelemetry/connect@0.3.0 join --organization-id tm_example --client codex --project .`
+Use `npx -y @codetelemetry/connect@0.3.1 join --organization-id tm_example --client codex --project .`
 from the project you choose, or use `--client claude`. Approve the displayed existing
 organization and follow the saved workspace's launch instructions. New connections
 capture prompts and supported tool content; `--no-enrich` opts out on new setup.
