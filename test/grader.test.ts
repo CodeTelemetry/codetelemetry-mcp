@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { seedGraderConfig } from "../src/client/graderSeed.ts";
-import { callTool, type ToolContext } from "../src/tools.ts";
+import { callTool, TOOLS, type ToolContext } from "../src/tools.ts";
 import { OnboardingSession } from "../src/session.ts";
 
 function fixture(t: { after(fn: () => void): void }) {
@@ -269,4 +269,36 @@ test("publication completes setup without UI, validates exact revisions, and nev
   assert.equal(attempts, 1);
   ctx.fetchImpl = async () => new Response("x".repeat(70 * 1024), { status: 200 });
   assert.equal((await callTool("publish_grader_config", args, ctx)).error, "publish_uncertain");
+});
+
+
+test("history Grader tools are thin bounded RPCs with IDs and no local environment", async () => {
+  const session = new OnboardingSession(); session.setKey("cot_syntheticgraderhistory000001", "pasted");
+  const requests: Array<{ url: string; body: unknown }> = [];
+  const ctx: ToolContext = { session, endpointsOverride: { apiBase: "https://example.test" }, fetchImpl: async (url, init) => {
+    requests.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+    return new Response(JSON.stringify({ ok: true, config: { runId: "12345678-1234-1234-1234-123456789abc", status: "queued" } }));
+  } };
+  const runId = "12345678-1234-1234-1234-123456789abc", candidateIds = ["history.synthetic"], expectedRevision = "a".repeat(64);
+  const operations = [
+    ["discover_grader_checks", "discover", { repository: "example/repo", features: "Common tests", days: 30 }],
+    ["backtest_grader_checks", "backtest", { discoveryId: runId, candidateIds }],
+    ["get_grader_run", "runs", { runId, cursor: "5" }],
+    ["save_grader_draft", "save-draft", { backtestId: runId, candidateIds, expectedRevision }],
+  ] as const;
+  for (const [name, route, args] of operations) {
+    assert.equal((await callTool(name, args, ctx)).ok, true);
+    assert.deepEqual(requests[requests.length - 1], { url: `https://example.test/api/agent/grader/${route}`, body: args });
+    assert.equal((await callTool(name, { ...args, repositoryPath: "/must-not-be-read" }, ctx)).error, "bad_input");
+  }
+  assert.equal((await callTool("discover_grader_checks", { repository: "repo", features: "Tests", days: "30" }, ctx)).error, "bad_input");
+  assert.equal((await callTool("backtest_grader_checks", { discoveryId: runId, candidateIds: ["same", "same"] }, ctx)).error, "bad_input");
+  let calls = 0; ctx.fetchImpl = async () => { calls++; throw new Error("connection lost"); };
+  assert.equal((await callTool("save_grader_draft", operations[3][2], ctx)).error, "save_uncertain"); assert.equal(calls, 1);
+});
+
+
+test("history Grader inputs match the shared public wire contract", () => {
+  const contracts = JSON.parse(fs.readFileSync(new URL("./fixtures/grader-run-inputs.json", import.meta.url), "utf8"));
+  for (const [name, schema] of Object.entries(contracts)) assert.deepEqual(TOOLS.find(t => t.name === name)?.inputSchema, schema);
 });

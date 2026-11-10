@@ -596,9 +596,10 @@ const GRADER_CHECK_PROP = obj({
 function graderSchemaValid(value: unknown, schema: Record<string, any>): boolean {
   if (schema.enum && !schema.enum.includes(value)) return false;
   if (schema.type === "string") return typeof value === "string" && value.length >= (schema.minLength ?? 0) && value.length <= (schema.maxLength ?? Infinity) && (!schema.pattern || new RegExp(schema.pattern).test(value));
+  if (schema.type === "integer") return typeof value === "number" && Number.isSafeInteger(value) && value >= (schema.minimum ?? -Infinity) && value <= (schema.maximum ?? Infinity);
   if (schema.type === "number") return typeof value === "number" && Number.isFinite(value) && value >= (schema.minimum ?? -Infinity) && value <= (schema.maximum ?? Infinity);
   if (schema.type === "boolean") return typeof value === "boolean";
-  if (schema.type === "array") return Array.isArray(value) && value.length >= (schema.minItems ?? 0) && value.length <= (schema.maxItems ?? Infinity) && value.every(item => graderSchemaValid(item, schema.items));
+  if (schema.type === "array") return Array.isArray(value) && value.length >= (schema.minItems ?? 0) && value.length <= (schema.maxItems ?? Infinity) && (!schema.uniqueItems || new Set(value).size === value.length) && value.every(item => graderSchemaValid(item, schema.items));
   if (schema.type === "object") {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
     if (!schema.properties) return true;
@@ -615,7 +616,7 @@ function graderMatcherValid(value: any): boolean {
     for (const key of ["all", "any"]) if (key in node) return Object.keys(node).length === 1 && Array.isArray(node[key]) && node[key].length > 0 && node[key].every((child: unknown) => visit(child, depth + 1));
     if ("not" in node) return Object.keys(node).length === 1 && visit(node.not, depth + 1);
     if (++conditions > 64 || Object.keys(node).some(key => !["field", "operator", "value"].includes(key))) return false;
-    if (!["source", "toolNamespace", "toolName", "operation", "executable", "packageScript", "packageScriptFamily", "normalizedArguments", "workingDirectory", "outcome", "exactFingerprint", "familyFingerprint"].includes(node.field) || !["equals", "in", "contains", "startsWith", "exists"].includes(node.operator)) return false;
+    if (!["source", "toolNamespace", "toolName", "operation", "executable", "packageScript", "packageScriptFamily", "normalizedArguments", "workingDirectory", "repositoryRelativeWorkingDirectory", "outcome", "exactFingerprint", "familyFingerprint"].includes(node.field) || !["equals", "in", "contains", "startsWith", "exists"].includes(node.operator)) return false;
     if (node.operator === "exists") return node.value === undefined;
     const values = Array.isArray(node.value) ? node.value : [node.value];
     return values.length > 0 && values.length <= 64 && values.every((item: unknown) => typeof item === "string" && item.length <= (node.field === "exactFingerprint" ? 1024 : 200)) && (node.field !== "exactFingerprint" || values.reduce((total: number, item: string) => total + item.length, 0) <= 8192);
@@ -665,7 +666,47 @@ async function requestGrader(ctx: ToolContext, operation: "read" | "update" | "p
       : "Read every page needed before changing or publishing existing checks. Use revision as expectedRevision when saving or publishing. Draft checks affect scoring after publish_grader_config." };
 }
 
+// History scans and evaluation run on the service. These RPC tools need no
+// checkout, shell, local matcher construction or environment configuration.
+const GRADER_RUN_SELECTION = {
+  repository: { type: "string", minLength: 1, maxLength: 512, description: "Recorded repository label, as returned by search_sessions." },
+  features: { type: "string", minLength: 1, maxLength: 4000, description: "Grading focus, for example common tests and static analysis before pushing." },
+  days: { type: "integer", minimum: 1, maximum: 30, description: "History window; defaults to 30 days." },
+  cohort: { type: "string", enum: ["pull_requests", "substantive"], description: "Defaults to PR-producing sessions. substantive includes all sessions with observed work." },
+};
+const GRADER_RUN_ID = { type: "string", pattern: "^[a-f0-9-]{36}$" };
+const GRADER_RUN_IDS = { type: "array", minItems: 1, maxItems: 30, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 128 } };
+const GRADER_RUN_TOOLS = [
+  { name: "discover_grader_checks", title: "Discover Grader checks from history", route: "discover", required: ["repository", "features"], properties: GRADER_RUN_SELECTION,
+    description: "Discover common validation checks for a recorded repository and grading focus. The service selects PR-producing sessions (default), scans bounded canonical history asynchronously and ranks exact normalized commands by distinct sessions. Returns a runId; poll get_grader_run for candidates, package scope, provenance, ambiguities and coverage. No local files or scripts. Partial evidence never proves an absence. Does not change the Grader." },
+  { name: "backtest_grader_checks", title: "Backtest Grader checks", route: "backtest", required: [], properties: { ...GRADER_RUN_SELECTION, discoveryId: GRADER_RUN_ID, candidateIds: GRADER_RUN_IDS, draftRevision: { type: "string", pattern: "^[a-f0-9]{64}$" }, checkIds: GRADER_RUN_IDS },
+    description: "Start an asynchronous backtest using discoveryId plus candidateIds, or draftRevision plus checkIds and repository (optional days/cohort/features). Uses pinned recorded evidence and the live Grader evaluator. Poll get_grader_run for completion and after-last-edit/before-push timing separately, per-session evidence, unknown outcomes and coverage limits. Does not publish or rewrite historical scores." },
+  { name: "get_grader_run", title: "Read Grader discovery or backtest progress", route: "runs", required: ["runId"], properties: { runId: GRADER_RUN_ID, cursor: { type: "string", minLength: 1, maxLength: 32 } },
+    description: "Poll a Grader run and follow returned cursors for bounded result pages. Returns progress, pinned window/cohort/evaluator, ranked candidates or check summaries and per-session evidence. Follow summaryCursor for remaining check summaries, or draftChecksCursor to discover saved check IDs/names for backtesting with the returned draftRevision. Runs expire after 24 hours. Report partial, unknown and stale evidence explicitly; do not treat missing telemetry as a failed check. Access is checked on every call." },
+  { name: "save_grader_draft", title: "Save selected backtested Grader checks", route: "save-draft", required: ["backtestId", "candidateIds", "expectedRevision"], properties: { backtestId: GRADER_RUN_ID, candidateIds: GRADER_RUN_IDS, expectedRevision: { type: "string", pattern: "^[a-f0-9]{64}$" } },
+    description: "Save selected candidates from a completed backtest into the Grader draft, preserving unrelated checks. Use current draftRevision from get_grader_run, or read get_grader_config, for expectedRevision. Refuses changed revisions and unresolved package or operand ambiguities. Returns saved check IDs and a new draft revision. Requires Grader write permission. Does not publish, change enforcement or rewrite stored scores. Never automatically retry an uncertain save; read the draft first." },
+] as const;
+async function requestGraderRun(ctx: ToolContext, route: string, args: Record<string, unknown>): Promise<ToolResult> {
+  if (!ctx.session.hasKey()) return NO_KEY;
+  try {
+    const result = await graderConfigRequest({ key: ctx.session.useKey(), url: `${endpointsFor(ctx).agentGraderUrl}/${route}`, body: args, fetchImpl: ctx.fetchImpl });
+    if (result.ok) return { ...result.config, ok: true };
+    const uncertain = route === "save-draft" && (result.httpStatus >= 500 || result.httpStatus < 300);
+    return { ok: false, error: uncertain ? "save_uncertain" : result.error ?? (result.httpStatus === 404 ? "not_supported" : "grader_unavailable"), message: uncertain ? "Read get_grader_config before retrying; the draft save may have completed." : result.message ?? "The Grader run request failed." };
+  } catch {
+    return { ok: false, error: route === "save-draft" ? "save_uncertain" : route === "runs" ? "grader_unavailable" : "start_uncertain", message: route === "save-draft" ? "Read get_grader_config before retrying; the draft save may have completed." : "The Grader request could not be confirmed. Do not automatically repeat a start request." };
+  }
+}
+
 export const TOOLS: ToolDef[] = [
+  ...GRADER_RUN_TOOLS.map(tool => ({
+    name: tool.name, title: tool.title, description: tool.description,
+    inputSchema: obj(tool.properties, [...tool.required]),
+    async handler(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+      if (!graderSchemaValid(args, obj(tool.properties, [...tool.required]))) return { ok: false, error: "bad_input", message: "Pass only the fields in this Grader tool's schema." };
+      return requestGraderRun(ctx, tool.route, args);
+    },
+  })),
   ...workspaceTools,
   {
     name: "authenticate",

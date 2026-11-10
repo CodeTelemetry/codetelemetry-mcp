@@ -57,6 +57,14 @@ const PACKAGE_NAME = "@codetelemetry/mcp";
 const SMOKE_LOOKBACK_DAYS = 1;
 const SMOKE_LIMIT = 1;
 const SIZING_TOOLS = ["estimate_task_size", "estimate_plan", "estimate_linear_issue"];
+// Structurally valid MCP requests that the service must reject before starting
+// a job or changing a draft. A generic route 404 never proves compatibility.
+const GRADER_RUN_PROBES = [
+  { tool: "discover_grader_checks", input: { repository: " ", features: "Release compatibility probe", days: 1 }, error: "invalid" },
+  { tool: "backtest_grader_checks", input: { discoveryId: "00000000-0000-0000-0000-000000000000", candidateIds: ["release-probe"], draftRevision: "a".repeat(64) }, error: "invalid" },
+  { tool: "get_grader_run", input: { runId: "00000000-0000-0000-0000-000000000000" }, error: "not_found" },
+  { tool: "save_grader_draft", input: { backtestId: "00000000-0000-0000-0000-000000000000", candidateIds: ["release-probe"], expectedRevision: "a".repeat(64) }, error: "not_found" },
+] as const;
 
 /** A plan that says what it is, so an operator seeing it in their own telemetry
  *  knows why. Deliberately generic: it is sized against the caller's history, and
@@ -362,6 +370,14 @@ async function main(): Promise<number> {
           calls.push({ tool: "get_grader_config", ok: false, error: String(grader.error ?? "invalid_response") });
         } else calls.push({ tool: "get_grader_config", ok: true, summary: { publishedVersion: config.publishedVersion, totalChecks: config.totalChecks } });
 
+        for (const probe of GRADER_RUN_PROBES) {
+          const result = await call(probe.tool, probe.input);
+          const answered = result.ok === false && result.error === probe.error &&
+            (probe.error !== "not_found" || result.message === "Grader run not found.");
+          if (!answered) problems.push(`${probe.tool} did not return its deployed read-only compatibility refusal (${String(result.error ?? "unexpected_success")})`);
+          calls.push({ tool: probe.tool, ok: false, ...(answered ? { routeProbed: probe.error } : { error: String(result.error ?? "unexpected_success") }) });
+        }
+
         // Without a configured issue there is nothing to size — but the ROUTE must
         // still be probed when this run is a gate, or a release could ship
         // estimate_linear_issue while /api/agent/linear-issue-size is absent or
@@ -438,7 +454,7 @@ async function main(): Promise<number> {
       } else {
         // Every backend route exercised by this gate must answer. A typed refusal
         // from the Linear route counts (the route answered); a skip does not.
-        for (const tool of ["estimate_plan", "search_sessions", "estimate_linear_issue", "plan_next_session", "get_grader_config"]) {
+        for (const tool of ["estimate_plan", "search_sessions", "estimate_linear_issue", "plan_next_session", "get_grader_config", ...GRADER_RUN_PROBES.map(probe => probe.tool)]) {
           const outcome = calls.find((c) => c.tool === tool);
           if (!outcome) {
             problems.push(`--require-auth was given but ${tool} was never called against the endpoint`);

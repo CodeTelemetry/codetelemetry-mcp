@@ -105,6 +105,7 @@ async function startBackend(
   searchMode: SearchMode = "available",
   planningMode: PlanningMode = "available",
   graderMode: "available" | "absent" | "draft-only" = "available",
+  historyFault?: string,
 ) {
   const server = http.createServer((req, res) => {
     let raw = "";
@@ -117,6 +118,15 @@ async function startBackend(
       if (req.url === "/api/agent/grader") {
         res.statusCode = graderMode !== "absent" ? 200 : 404;
         res.end(JSON.stringify(graderMode !== "absent" ? { ok: true, config: { capabilities: { publish: graderMode === "available" }, revision: "a".repeat(64), draft: { checks: [] }, totalChecks: 0, publishedVersion: 1 } } : { error: "not_found" }));
+        return;
+      }
+      if (["discover", "backtest", "runs", "save-draft"].some(route => req.url === `/api/agent/grader/${route}`)) {
+        const missing = req.url === historyFault;
+        const invalid = req.url?.endsWith("/discover") || req.url?.endsWith("/backtest");
+        res.statusCode = !missing && invalid ? 400 : 404;
+        res.end(JSON.stringify(missing ? { error: "not_found" } : invalid
+          ? { error: "invalid", message: "Invalid Grader probe selection." }
+          : { error: "not_found", message: "Grader run not found." }));
         return;
       }
       if ((req.url ?? "").includes("plan-next-session")) {
@@ -468,10 +478,11 @@ test("--require-auth probes the Linear sizing route even with no issue configure
     // It was probed, not skipped-without-asking.
     assert.deepEqual(
       seen.map((s) => s.path),
-      ["/api/agent/task-size", "/api/agent/plan-next-session", "/api/agent/session-search", "/api/agent/grader", "/api/agent/linear-issue-size"],
+      ["/api/agent/task-size", "/api/agent/plan-next-session", "/api/agent/session-search", "/api/agent/grader",
+        "/api/agent/grader/discover", "/api/agent/grader/backtest", "/api/agent/grader/runs", "/api/agent/grader/save-draft", "/api/agent/linear-issue-size"],
     );
     assert.equal(seen[2]!.body.limit, 1);
-    assert.equal(seen[4]!.body.reference, "SMOKE-0");
+    assert.equal(seen.find(call => call.path === "/api/agent/linear-issue-size")!.body.reference, "SMOKE-0");
   } finally {
     await backend.close();
   }
@@ -568,6 +579,20 @@ test("--require-auth blocks a draft-only Grader deployment without publishing", 
     assert.ok(!seen.some(call => call.path === "/api/agent/grader/publish"));
   } finally { await backend.close(); }
 });
+
+for (const route of ["discover", "backtest", "runs", "save-draft"]) {
+  test(`--require-auth blocks an absent Grader ${route} route without starting jobs or changing drafts`, { timeout: 600_000 }, async () => {
+    const seen: Seen[] = [], backend = await startBackend(seen, "sized", "available", "available", "available", `/api/agent/grader/${route}`);
+    try {
+      const run = await runSmoke(["--packaged", "--endpoint", backend.url, "--require-auth", "--json"], { ...sanitizeEnvForSubprocess(), CODETELEMETRY_INGEST_KEY: KEY });
+      assert.equal(run.status, 1);
+      const report = JSON.parse(run.stdout);
+      assert.ok(report.problems.some((message: string) => message.includes("compatibility refusal")));
+      assert.ok(!seen.some(call => call.path === "/api/agent/grader/publish" || call.path === "/api/agent/grader/configure"));
+      assert.equal(seen.find(call => call.path === "/api/agent/grader/discover")!.body.repository, " ");
+    } finally { await backend.close(); }
+  });
+}
 
 test("--require-auth refuses a discovery-only run", { timeout: 600_000 }, async () => {
   // The release uses this smoke as its pre-publish gate. `tools/list` never touches
@@ -822,6 +847,10 @@ test("the release smoke packs, launches and verifies the artifact a customer ins
       "/api/agent/plan-next-session",
       "/api/agent/session-search",
       "/api/agent/grader",
+      "/api/agent/grader/discover",
+      "/api/agent/grader/backtest",
+      "/api/agent/grader/runs",
+      "/api/agent/grader/save-draft",
       "/api/agent/linear-issue-size",
     ]);
     for (const call of seen) {
@@ -835,6 +864,9 @@ test("the release smoke packs, launches and verifies the artifact a customer ins
         assert.match(String(call.body.taskText), /bounded authenticated planning release smoke/);
       } else if (call.path === "/api/agent/grader") {
         assert.deepEqual(call.body, { limit: 1 });
+      } else if (call.path.startsWith("/api/agent/grader/")) {
+        if (call.path.endsWith("/discover")) assert.equal(call.body.repository, " ");
+        else assert.equal(call.body.runId ?? call.body.discoveryId ?? call.body.backtestId, "00000000-0000-0000-0000-000000000000");
       } else if (call.path === "/api/agent/task-size") {
         // The plan estimate reads at most 20 sessions from the last day.
         assert.equal(call.body.lookbackDays, 1);
@@ -845,7 +877,7 @@ test("the release smoke packs, launches and verifies the artifact a customer ins
       }
     }
     assert.match(String(seen[0]!.body.taskText), /CodeTelemetry MCP release smoke/);
-    assert.equal(seen[4]!.body.reference, "ELL-44");
+    assert.equal(seen.find(call => call.path === "/api/agent/linear-issue-size")!.body.reference, "ELL-44");
   } finally {
     await backend.close();
   }
