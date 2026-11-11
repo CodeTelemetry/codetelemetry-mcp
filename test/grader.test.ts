@@ -130,6 +130,10 @@ test("Grader tools read/write only selected checks and retain typed failures and
   const requiredLinked = { ...linkedChange, upsertChecks: [{ ...linked, beforePush: true }] };
   assert.equal((await callTool("update_grader_config", requiredLinked, ctx)).ok, true);
   assert.deepEqual(requests[3]!.body, requiredLinked);
+  // A task-scoped check (ELL-607) passes its issue scope through unchanged.
+  const task = { ...change, upsertChecks: [{ ...change.upsertChecks[0], issues: ["example-org/parceldesk#1", "example-org/parceldesk#2"] }] };
+  assert.equal((await callTool("update_grader_config", task, ctx)).ok, true);
+  assert.deepEqual(requests[4]!.body, task);
   for (const [status, body, expected] of [
     [409, { error: "conflict", message: "changed draft" }, "conflict"],
     [401, {}, "unauthenticated"], [429, {}, "rate_limited"], [404, {}, "not_supported"],
@@ -153,6 +157,10 @@ test("Grader tools read/write only selected checks and retain typed failures and
     ["update_grader_config", { ...change, upsertChecks: [{ ...change.upsertChecks[0], linkage: "signadot" }] }],
     ["update_grader_config", { ...change, upsertChecks: [{ ...linked, satisfactionMode: "successful", matcherRule: linked.components[0]!.matcherRule }] }],
     ["update_grader_config", { ...change, upsertChecks: [{ ...change.upsertChecks[0], matcherRule: { include: { field: "unknown", operator: "equals", value: "test" } } }] }],
+    ["update_grader_config", { ...change, upsertChecks: [{ ...change.upsertChecks[0], issues: [] }] }],
+    ["update_grader_config", { ...change, upsertChecks: [{ ...change.upsertChecks[0], issues: ["Example-Org/ParcelDesk#1"] }] }],
+    ["update_grader_config", { ...change, upsertChecks: [{ ...change.upsertChecks[0], issues: ["example-org/parceldesk#1", "example-org/parceldesk#1"] }] }],
+    ["update_grader_config", { ...change, upsertChecks: [{ ...change.upsertChecks[0], issues: ["parceldesk#1"] }] }],
     ["update_grader_config", { ...change, publish: true }],
     ["update_grader_config", { ...change, removeCheckIds: [3] }],
   ] as const) assert.equal((await callTool(name, args, ctx)).error, "bad_input");

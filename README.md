@@ -269,7 +269,12 @@ explain prose requirements the deterministic Grader cannot establish. Invoking a
 skill can be checked; compliance with all its written guidance cannot be inferred
 from invocation alone. Review inferred commands and adapt local working-directory
 matchers if your sessions run at another path. Pass `repositoryId` from session
-metadata to scope checks to the recorded repository.
+metadata to scope checks to the recorded repository. Give a check `issues`
+(`["owner/repo#N"]`, lowercase) to make it a task check: it is required only for a
+pull request that GitHub reports closes one of those issues, and it adds to the
+organization and repository checks. The PR gate reads GitHub's closing-issue
+references; when a repository has task checks, unknown or unmapped linkage fails
+closed.
 
 The agent then reads `get_grader_config` (follow `nextOffset` for remaining checks)
 and sends selected `upsertChecks` and/or `removeCheckIds` to
