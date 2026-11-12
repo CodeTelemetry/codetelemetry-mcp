@@ -31,7 +31,7 @@ deterministic (see [Releases & discovery](#releases--discovery)):
 ```json
 {
   "mcpServers": {
-    "codetelemetry": { "command": "npx", "args": ["-y", "--package=@codetelemetry/mcp@0.6.0", "codetelemetry-mcp"] }
+    "codetelemetry": { "command": "npx", "args": ["-y", "--package=@codetelemetry/mcp@0.7.0", "codetelemetry-mcp"] }
   }
 }
 ```
@@ -45,7 +45,7 @@ sessions without local setup, or **Connect my coding tool** to record your own w
 Run the project connection command from the repository you choose:
 
 ```sh
-npx -y @codetelemetry/connect@0.3.1 join --organization-id tm_example --client codex --project .
+npx -y @codetelemetry/connect@0.3.2 join --organization-id tm_example --client codex --project .
 # For Claude Code, use --client claude.
 ```
 
@@ -67,9 +67,9 @@ verification. **My sessions** is scoped to your authenticated ingest ownership;
 Optional history import uses the saved project and credentials, without a key argument:
 
 ```sh
-npx -y @codetelemetry/connect@0.3.1 import --workspace <name> --preview
+npx -y @codetelemetry/connect@0.3.2 import --workspace <name> --preview
 # Choose numbers from that preview; no session content uploads until confirmation:
-npx -y @codetelemetry/connect@0.3.1 import --workspace <name> --select 1,2 --confirm
+npx -y @codetelemetry/connect@0.3.2 import --workspace <name> --select 1,2 --confirm
 ```
 
 Preview is local-only and defaults to the last 30 days. It keeps at most 100 session
@@ -269,7 +269,12 @@ explain prose requirements the deterministic Grader cannot establish. Invoking a
 skill can be checked; compliance with all its written guidance cannot be inferred
 from invocation alone. Review inferred commands and adapt local working-directory
 matchers if your sessions run at another path. Pass `repositoryId` from session
-metadata to scope checks to the recorded repository.
+metadata to scope checks to the recorded repository. Give a check `issues`
+(`["owner/repo#N"]`, lowercase) to make it a task check: it is required only for a
+pull request that GitHub reports closes one of those issues, and it adds to the
+organization and repository checks. The PR gate reads GitHub's closing-issue
+references; when a repository has task checks, unknown or unmapped linkage fails
+closed.
 
 The agent then reads `get_grader_config` (follow `nextOffset` for remaining checks)
 and sends selected `upsertChecks` and/or `removeCheckIds` to

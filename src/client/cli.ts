@@ -494,7 +494,7 @@ export async function run(argv: string[]): Promise<number> {
       out(`Local preview for ${flags.workspace}: ${result.previewSessions.length} sessions. Nothing uploaded.`);
       result.previewSessions.forEach((session, i) => out(`${i + 1}. ${session.source} ${session.sessionId} · ${new Date(session.endMs).toISOString()} · ${session.events} events`));
       if (result.remaining) out(`${result.remaining} additional sessions remain; narrow --since for another preview.`);
-      out(`Import selected numbers: npx -y @codetelemetry/connect@0.3.1 import --workspace ${flags.workspace} --select 1,2 --confirm`);
+      out(`Import selected numbers: npx -y @codetelemetry/connect@0.3.2 import --workspace ${flags.workspace} --select 1,2 --confirm`);
     } else out(`Imported ${result.totals.sessions} sessions; ${result.remaining} remain. ${result.errors.slice(0, 3).join(" ")}`);
     return result.ok ? 0 : 1;
   }

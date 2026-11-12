@@ -1,7 +1,7 @@
 {
   "serverName": "codetelemetry",
-  "serverVersion": "0.6.0",
-  "registryHash": "491c37a8f144fa1418e3e3ae091e6aac3ace57ef09a675169920d229dda83c7a",
+  "serverVersion": "0.7.0",
+  "registryHash": "eebf2611c67780abfae82ff19098d5b9cff943aebbc9fae45b60e37ccd836a61",
   "toolCount": 34,
   "tools": [
     {
@@ -1480,6 +1480,19 @@
                     "additionalProperties": false
                   }
                 },
+                "issues": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 20,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 220,
+                    "pattern": "^[a-z0-9][a-z0-9-]{0,38}/[a-z0-9._-]{1,100}#[1-9][0-9]{0,9}$"
+                  },
+                  "description": "Task scope: the GitHub issues (lowercase owner/repo#number) this check is required for. It applies only when the pull request being judged closes one of them, as GitHub reports it, and adds to organization and repository checks; it never applies outside a pull request. Issue and PR text never select it."
+                },
                 "linkage": {
                   "type": "string",
                   "enum": [
@@ -1534,7 +1547,7 @@
     {
       "name": "update_grader_config",
       "title": "Update the Grader draft",
-      "description": "Save selected instruction/skill-derived checks to the authenticated workspace's Grader draft. features records which instruction features the user wants graded. Use seed_grader_config to inspect sources, then get_grader_config to obtain expectedRevision. upsertChecks add or update by id, preserving unmentioned checks; removeCheckIds removes only named checks. Checks use the dashboard's ValidationCheck shape and deterministic matcherRule (source, executable, packageScript, normalizedArguments, toolNamespace/toolName, operation, workingDirectory, etc.). For example, a skill check can require source=agent_tool, toolName=Skill, and operation=<skill name>; do not equate invoking a skill with complying with all its prose. Match only observable evidence, keep rationale/source in description, and apply repositoryId/environment scope when appropriate. The backend validates checks and refuses stale revisions with conflict; read again before retrying any uncertain save. After saving, use write_grader_config_artifact to leave selected checks as Terraform or Pulumi when requested. This saves a draft; use publish_grader_config with the returned revision to apply it when the user wants publication.",
+      "description": "Save selected instruction/skill-derived checks to the authenticated workspace's Grader draft. features records which instruction features the user wants graded. Use seed_grader_config to inspect sources, then get_grader_config to obtain expectedRevision. upsertChecks add or update by id, preserving unmentioned checks; removeCheckIds removes only named checks. Checks use the dashboard's ValidationCheck shape and deterministic matcherRule (source, executable, packageScript, normalizedArguments, toolNamespace/toolName, operation, workingDirectory, etc.). For example, a skill check can require source=agent_tool, toolName=Skill, and operation=<skill name>; do not equate invoking a skill with complying with all its prose. Match only observable evidence, keep rationale/source in description, and apply repositoryId/environment scope when appropriate. Use issues for checks that only one GitHub issue's pull request must pass (task scope). The backend validates checks and refuses stale revisions with conflict; read again before retrying any uncertain save. After saving, use write_grader_config_artifact to leave selected checks as Terraform or Pulumi when requested. This saves a draft; use publish_grader_config with the returned revision to apply it when the user wants publication.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1741,6 +1754,19 @@
                     ],
                     "additionalProperties": false
                   }
+                },
+                "issues": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 20,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 220,
+                    "pattern": "^[a-z0-9][a-z0-9-]{0,38}/[a-z0-9._-]{1,100}#[1-9][0-9]{0,9}$"
+                  },
+                  "description": "Task scope: the GitHub issues (lowercase owner/repo#number) this check is required for. It applies only when the pull request being judged closes one of them, as GitHub reports it, and adds to organization and repository checks; it never applies outside a pull request. Issue and PR text never select it."
                 },
                 "linkage": {
                   "type": "string",
