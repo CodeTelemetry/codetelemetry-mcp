@@ -1,7 +1,7 @@
 {
   "serverName": "codetelemetry",
   "serverVersion": "0.7.0",
-  "registryHash": "eebf2611c67780abfae82ff19098d5b9cff943aebbc9fae45b60e37ccd836a61",
+  "registryHash": "6b55c6ab7ad6165184e5606b7e4b94db294abbaec9a7c9c59c81b7fd240b35bb",
   "toolCount": 34,
   "tools": [
     {
@@ -1364,7 +1364,7 @@
                 },
                 "beforePush": {
                   "type": "boolean",
-                  "description": "Require successful command evidence after the final edit and before pushing; subject to the backend's stricter required-command matcher validation."
+                  "description": "Require successful command evidence after the final edit and before pushing; the service accepts it only when matcherRule.include names the commands: one exactFingerprint equals/in condition, or all of source equals shell, executable equals/in and packageScript equals/in (each optionally with one repositoryRelativeWorkingDirectory equals condition). Broader matchers are refused."
                 },
                 "matcherRule": {
                   "type": "object",
@@ -1639,7 +1639,7 @@
                 },
                 "beforePush": {
                   "type": "boolean",
-                  "description": "Require successful command evidence after the final edit and before pushing; subject to the backend's stricter required-command matcher validation."
+                  "description": "Require successful command evidence after the final edit and before pushing; the service accepts it only when matcherRule.include names the commands: one exactFingerprint equals/in condition, or all of source equals shell, executable equals/in and packageScript equals/in (each optionally with one repositoryRelativeWorkingDirectory equals condition). Broader matchers are refused."
                 },
                 "matcherRule": {
                   "type": "object",

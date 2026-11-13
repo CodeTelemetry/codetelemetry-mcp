@@ -582,7 +582,7 @@ const GRADER_CHECK_PROP = obj({
   enabled: { type: "boolean" },
   repositoryId: { type: "string", minLength: 1, maxLength: 512 },
   environment: { type: "string", minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$" },
-  beforePush: { type: "boolean", description: "Require successful command evidence after the final edit and before pushing; subject to the backend's stricter required-command matcher validation." },
+  beforePush: { type: "boolean", description: "Require successful command evidence after the final edit and before pushing; the service accepts it only when matcherRule.include names the commands: one exactFingerprint equals/in condition, or all of source equals shell, executable equals/in and packageScript equals/in (each optionally with one repositoryRelativeWorkingDirectory equals condition). Broader matchers are refused." },
   matcherRule: GRADER_MATCHER_PROP,
   detectorRule: GRADER_MATCHER_PROP,
   applicabilityRule: GRADER_MATCHER_PROP,
