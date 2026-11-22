@@ -7,8 +7,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { assertKey, keyHash, mask } from "../keys.ts";
 import { resolveEndpoints } from "../config.ts";
 import type { FetchLike } from "../otlp.ts";
-import type { ImportSource } from "./model.ts";
-import { sessionKeyOf } from "./model.ts";
+import type { IdentityBySource, ImportSource } from "./model.ts";
+import { NO_CONTENT, sessionKeyOf } from "./model.ts";
 import {
   ACTIVE_GRACE_MS,
   bump,
@@ -25,8 +25,12 @@ import {
   type Prepared,
 } from "./core.ts";
 import {
+  HistoryReadBudgetError,
+  MAX_SESSION_FILE_BYTES,
   defaultClaudeProjectsDir,
+  defaultClaudeSettingsPath,
   defaultCodexSessionsDir,
+  readClaudeCleanupPeriodDays,
   parseCandidate,
   candidateProjectDirectory,
   scanClaudeSessions,
@@ -34,6 +38,7 @@ import {
   type SessionCandidate,
 } from "./sources/files.ts";
 import { LedgerStore, resolveLedgerPath } from "./ledger.ts";
+import { EstimateBuilder, estimateWindow, type HistoryEstimate } from "./estimate.ts";
 
 export {
   RETENTION_DAYS,
@@ -48,7 +53,9 @@ export {
   type ImportSourceSummary,
   type SkipCounts,
   type StopReason,
+  type ImportRunBilling,
 } from "./core.ts";
+export type { HistoryEstimate, HistoryEstimateSource, MonthBucket } from "./estimate.ts";
 
 export type ImportRunOptions = {
   key: string;
@@ -60,8 +67,13 @@ export type ImportRunOptions = {
   untilMs?: number;
   /** Only sessions whose cwd is this path or under it. */
   project?: string;
-  /** Stamped as resource-level user.email on imported rows. */
+  /** Stamped as user.email on imported rows (resource and every record);
+   *  overrides the resolved identity's email. */
   email?: string;
+  /** Identity attributes per source, stamped on every record the way live
+   *  exporters send them (identity.ts resolveImportIdentity). Default none:
+   *  the library stamps no identity unless the caller resolves one. */
+  identity?: IdentityBySource;
   /** Content each source may export. Default: none (counts / sizes / names only). */
   content?: Partial<ContentBySource>;
   /** Parse, check and summarize; send nothing, write nothing. */
@@ -140,6 +152,7 @@ export async function runImport(opts: ImportRunOptions): Promise<ImportRunResult
     caseInsensitivePaths: process.platform === "win32" || process.platform === "darwin",
     content,
     email: opts.email,
+    identity: opts.identity,
     sha256Hex,
   };
   for (const c of found) {
@@ -236,4 +249,94 @@ export async function runImport(opts: ImportRunOptions): Promise<ImportRunResult
   } finally {
     if (!dryRun) ledger.compact();
   }
+}
+
+export type EstimateRunOptions = {
+  source?: ImportSource | "all";
+  /** Window start (epoch ms). Default: the retained year (364 days). */
+  sinceMs?: number;
+  nowMs?: number;
+  claudeDir?: string;
+  codexDir?: string;
+  /** Where Claude Code's cleanupPeriodDays is read (default: user settings.json). */
+  claudeSettingsPath?: string;
+  /** Wall-clock bound (the MCP tool's); sessions not reached are skipped as `time_limit`. */
+  timeLimitMs?: number;
+};
+
+/**
+ * `codetelemetry-connect estimate` and the MCP `estimate_history` tool: what
+ * the local history would add up to if imported. No key, no network, nothing
+ * written; files are streamed through the importer's parsers without content.
+ */
+export async function runEstimate(opts: EstimateRunOptions = {}): Promise<HistoryEstimate> {
+  const now = opts.nowMs ?? Date.now();
+  const window = estimateWindow(now, opts.sinceMs);
+  const wantClaude = !opts.source || opts.source === "all" || opts.source === "claude-code";
+  const wantCodex = !opts.source || opts.source === "all" || opts.source === "codex";
+  const sources: ImportSource[] = [...(wantClaude ? ["claude-code" as const] : []), ...(wantCodex ? ["codex" as const] : [])];
+  const builder = new EstimateBuilder({ sinceMs: window.sinceMs, untilMs: window.untilMs, nowMs: now, sources });
+  if (window.warning) builder.warn(window.warning);
+
+  const found: SessionCandidate[] = [];
+  if (wantClaude) {
+    const files = scanClaudeSessions(opts.claudeDir ?? defaultClaudeProjectsDir());
+    builder.found("claude-code", files.length);
+    found.push(...files);
+  }
+  if (wantCodex) {
+    const files = scanCodexSessions(opts.codexDir ?? defaultCodexSessionsDir());
+    builder.found("codex", files.length);
+    found.push(...files);
+  }
+
+  const deadline = opts.timeLimitMs ? Date.now() + opts.timeLimitMs : Infinity;
+  const limits = Number.isFinite(deadline) ? { deadline, maxBytes: MAX_SESSION_FILE_BYTES } : undefined;
+  const seen = new Set<string>();
+  let timedOut = false;
+  for (const c of found) {
+    if (timedOut || Date.now() >= deadline) {
+      timedOut = true;
+      builder.skip(c.source, "time_limit");
+      continue;
+    }
+    if (c.mtimeMs < window.sinceMs) {
+      builder.skip(c.source, "older");
+      continue;
+    }
+    if (c.mtimeMs > now - ACTIVE_GRACE_MS) {
+      builder.skip(c.source, "active");
+      continue;
+    }
+    let parsed: Awaited<ReturnType<typeof parseCandidate>>;
+    try {
+      parsed = await parseCandidate(c, NO_CONTENT, limits);
+    } catch (err) {
+      if (!(err instanceof HistoryReadBudgetError)) throw err;
+      timedOut = true;
+      builder.skip(c.source, "time_limit");
+      continue;
+    }
+    if (!parsed.ok) {
+      builder.skip(c.source, parsed.reason);
+      builder.warn(`${c.source} ${c.file}: ${parsed.detail}; not counted`);
+      continue;
+    }
+    if (!parsed.session) {
+      builder.skip(c.source, "empty");
+      continue;
+    }
+    const sessionKey = sessionKeyOf(parsed.session.source, parsed.session.sessionId);
+    if (seen.has(sessionKey)) {
+      builder.warn(`${sessionKey} appears in more than one file; only the first is counted`);
+      continue;
+    }
+    seen.add(sessionKey);
+    const outcome = builder.add(parsed.session);
+    if (outcome !== "added") builder.skip(c.source, outcome);
+  }
+  if (timedOut) builder.warn("The estimate reached its time bound; the totals cover only the sessions read (see skipped.time_limit).");
+  return builder.finish({
+    claudeCleanupPeriodDays: wantClaude ? readClaudeCleanupPeriodDays(opts.claudeSettingsPath ?? defaultClaudeSettingsPath()) : null,
+  });
 }

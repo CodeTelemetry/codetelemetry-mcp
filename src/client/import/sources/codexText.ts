@@ -21,7 +21,7 @@
 
 import { githubOrigin } from "../../repositoryOrigin.ts";
 import type { ContentPolicy, ImportedModelCall, ImportedPrompt, ImportedSession, ImportedToolCall } from "../model.ts";
-import { MAX_EVENTS_PER_SESSION, MAX_PROMPT_CHARS, MAX_TOOL_INPUT_CHARS, NO_CONTENT, capText } from "../model.ts";
+import { MAX_EVENTS_PER_SESSION, MAX_PROMPT_CHARS, MAX_TOOL_INPUT_CHARS, NO_CONTENT, capText, capToolInput } from "../model.ts";
 
 type Rec = Record<string, any>;
 type Usage = { input: number; cached: number; output: number };
@@ -61,6 +61,19 @@ const userMessageText = (item: Rec): string => {
     .filter((c: Rec) => c && typeof c.text === "string")
     .map((c: Rec) => c.text)
     .join("\n");
+};
+
+/** Codex function arguments are JSON text; a long one is shortened as JSON
+ *  (still parseable) rather than sliced. Free-form inputs keep the plain cap. */
+const codexToolInput = (raw: unknown, full: string): string => {
+  if (full.length <= MAX_TOOL_INPUT_CHARS) return full;
+  if (typeof raw !== "string") return capToolInput(raw, full, MAX_TOOL_INPUT_CHARS);
+  if (!/^\s*[[{]/.test(raw)) return capText(full, MAX_TOOL_INPUT_CHARS);
+  try {
+    return capToolInput(JSON.parse(raw), full, MAX_TOOL_INPUT_CHARS);
+  } catch {
+    return capText(full, MAX_TOOL_INPUT_CHARS);
+  }
 };
 
 export type CodexParseOptions = { keep?: ContentPolicy };
@@ -189,7 +202,7 @@ export class CodexSessionAccumulator {
         }
         this.#pending.set(callId, {
           name: String(p.name ?? (p.type === "local_shell_call" ? "shell" : "unknown")),
-          input: this.#keep.toolDetails && full ? capText(full, MAX_TOOL_INPUT_CHARS) : null,
+          input: this.#keep.toolDetails && full ? codexToolInput(rawInput, full) : null,
           inputBytes: full.length,
         });
         return;

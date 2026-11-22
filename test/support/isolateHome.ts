@@ -13,6 +13,11 @@ const home = fs.mkdtempSync(path.join(os.tmpdir(), "cot-test-home-"));
 process.env.HOME = home; // os.homedir() on POSIX
 process.env.USERPROFILE = home; // os.homedir() on Windows
 process.env.CODEX_HOME = path.join(home, ".codex"); // an inherited CODEX_HOME would win over the home default
+// Claude Code's own relocation and identity overrides would point the history
+// importer (projects, ~/.claude.json identity, settings) back at real files.
+delete process.env.CLAUDE_CONFIG_DIR;
+delete process.env.CLAUDE_CODE_ACCOUNT_TAGGED_ID;
+delete process.env.OTEL_METRICS_INCLUDE_ACCOUNT_UUID;
 
 if (os.homedir() !== home) {
   throw new Error(`test home isolation failed: os.homedir() is ${os.homedir()}, expected ${home}`);

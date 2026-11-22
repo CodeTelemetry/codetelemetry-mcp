@@ -19,7 +19,7 @@
 //   anything else    — summary / attachment / queue-operation / *-title / … ignored.
 
 import type { ContentPolicy, ImportedModelCall, ImportedPrompt, ImportedSession, ImportedToolCall } from "../model.ts";
-import { MAX_EVENTS_PER_SESSION, MAX_PROMPT_CHARS, MAX_TOOL_INPUT_CHARS, NO_CONTENT, capText } from "../model.ts";
+import { MAX_EVENTS_PER_SESSION, MAX_PROMPT_CHARS, MAX_TOOL_INPUT_CHARS, NO_CONTENT, capText, capToolInput } from "../model.ts";
 
 type Rec = Record<string, any>;
 
@@ -160,7 +160,9 @@ export class ClaudeSessionAccumulator {
           }
           this.#pending.set(block.id, {
             name: String(block.name ?? "unknown"),
-            input: this.#keep.toolDetails && full ? capText(full, MAX_TOOL_INPUT_CHARS) : null,
+            // Valid JSON within the bound (long values shortened, paths and
+            // commands kept), never a slice of the JSON text.
+            input: this.#keep.toolDetails && full ? capToolInput(block.input, full, MAX_TOOL_INPUT_CHARS) : null,
             inputBytes: full.length,
           });
         }

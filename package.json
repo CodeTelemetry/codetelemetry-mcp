@@ -98,6 +98,14 @@
       "types": "./dist/src/client/import/core.d.ts",
       "default": "./dist/src/client/import/core.js"
     },
+    "./client/import/estimate": {
+      "types": "./dist/src/client/import/estimate.d.ts",
+      "default": "./dist/src/client/import/estimate.js"
+    },
+    "./client/import/identity": {
+      "types": "./dist/src/client/import/identity.d.ts",
+      "default": "./dist/src/client/import/identity.js"
+    },
     "./client/import/ledger": {
       "types": "./dist/src/client/import/ledger.d.ts",
       "default": "./dist/src/client/import/ledger.js"

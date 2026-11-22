@@ -11,6 +11,7 @@
 // per-plan probe, which is exactly what it was built to allow.
 
 import type { ContentPolicy, ImportSource, ImportedSession } from "./model.ts";
+import { NO_CONTENT } from "./model.ts";
 import { ClaudeSessionAccumulator } from "./sources/claudeCodeText.ts";
 import { CodexSessionAccumulator, codexSessionIdFromName } from "./sources/codexText.ts";
 import {
@@ -26,7 +27,9 @@ import {
   type ImportRunResult,
   type ImportSourceSummary,
   type Prepared,
+  type SkipCounts,
 } from "./core.ts";
+import { EstimateBuilder, estimateWindow, type HistoryEstimate } from "./estimate.ts";
 import type { FetchLike } from "../otlp.ts";
 
 /** The browser's File, or anything shaped like it. */
@@ -62,6 +65,8 @@ export type BrowserImportOptions = {
   sinceMs?: number;
   content?: Partial<ContentBySource>;
   maxSessions?: number;
+  /** Stamped as user.email on every imported record (the only identity a page knows). */
+  identity?: { email?: string };
   fetchImpl?: FetchLike;
   nowMs?: number;
   sleep?: (ms: number) => Promise<void>;
@@ -109,6 +114,71 @@ async function parseGroup(g: Group, keep: ContentPolicy): Promise<ImportedSessio
   return acc.finish({ files: g.files.map((f) => f.name), fileSig: `${bytes}:${mtime}:${g.files.length}`, fallbackSessionId: g.sessionId });
 }
 
+type UploadVisitor = {
+  found(source: ImportSource): void;
+  skip(source: ImportSource, reason: keyof SkipCounts): void;
+  session(session: ImportedSession, group: Group): Promise<void>;
+};
+
+/**
+ * The classify → group → parse loop both upload paths share: files are
+ * grouped into sessions within the page's memory bounds, cheap mtime filters
+ * run first, then each session is parsed and handed to `visit.session`.
+ */
+async function visitUploads(
+  files: UploadFile[],
+  o: { now: number; sinceMs: number; keep: (source: ImportSource) => ContentPolicy; warnings: string[] },
+  visit: UploadVisitor,
+): Promise<void> {
+  const groups = new Map<string, Group>();
+  let total = 0;
+  for (const f of files.slice(0, MAX_UPLOAD_FILES)) {
+    if (!f.name.endsWith(".jsonl")) {
+      o.warnings.push(`${f.name}: not a .jsonl session file; skipped`);
+      continue;
+    }
+    if (f.size > MAX_UPLOAD_FILE_BYTES || total + f.size > MAX_UPLOAD_TOTAL_BYTES) {
+      o.warnings.push(`${f.name}: too large to read in the browser; use \`npx @codetelemetry/connect import\``);
+      continue;
+    }
+    total += f.size;
+    const head = await (f.slice ? f.slice(0, 256 * 1024).text() : f.text().then((t) => t.slice(0, 256 * 1024)));
+    const kind = classify(f.name, head);
+    if (!kind) {
+      o.warnings.push(`${f.name}: not a Claude Code transcript or Codex rollout; skipped`);
+      continue;
+    }
+    const id = `${kind.source}:${kind.sessionId}`;
+    const g = groups.get(id) ?? { ...kind, files: [] };
+    g.files.push(f);
+    groups.set(id, g);
+    visit.found(kind.source);
+  }
+  if (files.length > MAX_UPLOAD_FILES) o.warnings.push(`only the first ${MAX_UPLOAD_FILES} files were read`);
+
+  for (const g of groups.values()) {
+    const mtime = Math.max(...g.files.map((f) => f.lastModified));
+    if (mtime < o.sinceMs) {
+      visit.skip(g.source, "older");
+      continue;
+    }
+    if (mtime > o.now - ACTIVE_GRACE_MS) {
+      visit.skip(g.source, "active");
+      continue;
+    }
+    const session = await parseGroup(g, o.keep(g.source));
+    if (session === "too_many_events") {
+      visit.skip(g.source, "too_many_events");
+      continue;
+    }
+    if (!session) {
+      visit.skip(g.source, "empty");
+      continue;
+    }
+    await visit.session(session, g);
+  }
+}
+
 /** Import dropped Claude Code transcripts and Codex rollouts. */
 export async function importFiles(files: UploadFile[], opts: BrowserImportOptions): Promise<ImportRunResult> {
   const key = opts.key.trim();
@@ -122,75 +192,39 @@ export async function importFiles(files: UploadFile[], opts: BrowserImportOption
     ["claude-code", emptySummary("claude-code")],
     ["codex", emptySummary("codex")],
   ]);
-
-  // Group files into sessions, within the page's memory bounds.
-  const groups = new Map<string, Group>();
-  let total = 0;
-  for (const f of files.slice(0, MAX_UPLOAD_FILES)) {
-    if (!f.name.endsWith(".jsonl")) {
-      warnings.push(`${f.name}: not a .jsonl session file; skipped`);
-      continue;
-    }
-    if (f.size > MAX_UPLOAD_FILE_BYTES || total + f.size > MAX_UPLOAD_TOTAL_BYTES) {
-      warnings.push(`${f.name}: too large to import in the browser; use \`npx @codetelemetry/connect import\``);
-      continue;
-    }
-    total += f.size;
-    const head = await (f.slice ? f.slice(0, 256 * 1024).text() : f.text().then((t) => t.slice(0, 256 * 1024)));
-    const kind = classify(f.name, head);
-    if (!kind) {
-      warnings.push(`${f.name}: not a Claude Code transcript or Codex rollout; skipped`);
-      continue;
-    }
-    const id = `${kind.source}:${kind.sessionId}`;
-    const g = groups.get(id) ?? { ...kind, files: [] };
-    g.files.push(f);
-    groups.set(id, g);
-    summaries.get(kind.source)!.filesFound++;
-  }
-  if (files.length > MAX_UPLOAD_FILES) warnings.push(`only the first ${MAX_UPLOAD_FILES} files were read`);
+  const email = opts.identity?.email?.trim();
+  const identity = email ? { "claude-code": { "user.email": email }, codex: { "user.email": email } } : undefined;
 
   const prepareOpts = {
     sinceMs: window.sinceMs,
     untilMs: window.untilMs,
     caseInsensitivePaths: false,
     content,
+    identity,
     sha256Hex: sha256HexWeb,
   };
   const prepared: Prepared[] = [];
-  for (const g of groups.values()) {
-    const s = summaries.get(g.source)!;
-    const mtime = Math.max(...g.files.map((f) => f.lastModified));
-    if (mtime < window.sinceMs) {
-      bump(s, "older");
-      continue;
-    }
-    if (mtime > now - ACTIVE_GRACE_MS) {
-      bump(s, "active");
-      continue;
-    }
-    const session = await parseGroup(g, content[g.source]);
-    if (session === "too_many_events") {
-      bump(s, "too_many_events");
-      continue;
-    }
-    if (!session) {
-      bump(s, "empty");
-      continue;
-    }
-    s.sessionsParsed++;
-    const reload = async () => {
-      const again = await parseGroup(g, content[g.source]);
-      return again === "too_many_events" ? null : again;
-    };
-    const p = await prepareSession(session, session.fileSig, reload, prepareOpts);
-    if (typeof p === "string") {
-      bump(s, p);
-      continue;
-    }
-    s.candidates++;
-    prepared.push(p);
-  }
+  await visitUploads(files, { now, sinceMs: window.sinceMs, keep: (source) => content[source], warnings }, {
+    found: (source) => {
+      summaries.get(source)!.filesFound++;
+    },
+    skip: (source, reason) => bump(summaries.get(source)!, reason),
+    session: async (session, g) => {
+      const s = summaries.get(g.source)!;
+      s.sessionsParsed++;
+      const reload = async () => {
+        const again = await parseGroup(g, content[g.source]);
+        return again === "too_many_events" ? null : again;
+      };
+      const p = await prepareSession(session, session.fileSig, reload, prepareOpts);
+      if (typeof p === "string") {
+        bump(s, p);
+        return;
+      }
+      s.candidates++;
+      prepared.push(p);
+    },
+  });
 
   const keyHash = await sha256HexWeb(key);
   return importPrepared(prepared, {
@@ -214,4 +248,28 @@ export async function importFiles(files: UploadFile[], opts: BrowserImportOption
     warnings,
     logger: opts.logger,
   });
+}
+
+/**
+ * Estimate dropped transcripts / rollouts without a key and without sending
+ * anything: sessions and tokens per source, month and day over the window
+ * (default the retained year). Same grouping, filters and parsers as
+ * `importFiles`, so the estimate covers what an upload would read.
+ */
+export async function estimateFiles(files: UploadFile[], opts: { nowMs?: number; sinceMs?: number } = {}): Promise<HistoryEstimate> {
+  const now = opts.nowMs ?? Date.now();
+  const window = estimateWindow(now, opts.sinceMs);
+  const builder = new EstimateBuilder({ sinceMs: window.sinceMs, untilMs: window.untilMs, nowMs: now, sources: ["claude-code", "codex"] });
+  const warnings: string[] = [];
+  if (window.warning) warnings.push(window.warning);
+  await visitUploads(files, { now, sinceMs: window.sinceMs, keep: () => NO_CONTENT, warnings }, {
+    found: (source) => builder.found(source),
+    skip: (source, reason) => builder.skip(source, reason),
+    session: async (session) => {
+      const outcome = builder.add(session);
+      if (outcome !== "added") builder.skip(session.source, outcome);
+    },
+  });
+  for (const w of warnings) builder.warn(w);
+  return builder.finish({ claudeCleanupPeriodDays: null });
 }

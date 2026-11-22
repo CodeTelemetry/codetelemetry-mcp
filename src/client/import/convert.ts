@@ -25,8 +25,8 @@
 // collector stamps per-delivery ids into their identity), which is why the run
 // protocol in run.ts never sends a metric part twice.
 
-import type { ContentPolicy, ImportAttributes, ImportLog, ImportMetric, ImportedSession } from "./model.ts";
-import { toNano } from "./model.ts";
+import type { ContentPolicy, ImportAttributes, ImportIdentity, ImportLog, ImportMetric, ImportedSession } from "./model.ts";
+import { callTokens, toNano } from "./model.ts";
 
 export const CLAUDE_SERVICE = "claude-code";
 export const CODEX_SERVICE = "codex-cli";
@@ -197,24 +197,44 @@ function convertCodex(session: ImportedSession, content: ContentPolicy): Convert
   return { logs: finishLogs(staged), metrics: [] };
 }
 
-export function convertSession(session: ImportedSession, content: ContentPolicy): ConvertedSession {
-  return session.source === "claude-code" ? convertClaude(session, content) : convertCodex(session, content);
+export function convertSession(session: ImportedSession, content: ContentPolicy, identity?: ImportIdentity): ConvertedSession {
+  const converted = session.source === "claude-code" ? convertClaude(session, content) : convertCodex(session, content);
+  return identity && Object.keys(identity).length ? stampIdentity(converted, identity) : converted;
 }
 
-/** The commit marker record for one session plan. Carries no content. */
+/** Identity rides on every record the way live exporters send it: as record
+ *  (log / data point) attributes. An event's own attribute always wins. */
+function stampIdentity(converted: ConvertedSession, identity: ImportIdentity): ConvertedSession {
+  return {
+    logs: converted.logs.map((l) => ({ ...l, attributes: { ...identity, ...l.attributes } })),
+    metrics: converted.metrics.map((m) => ({ ...m, attributes: { ...identity, ...m.attributes } })),
+  };
+}
+
+/** The commit marker record for one session plan. Carries no content.
+ *
+ *  `import.session_start_ms` (the trimmed session's first event, epoch ms) and
+ *  `import.tokens` are decimal strings for the server's import accounting;
+ *  `import.tokens` is informational only — billing reads the imported rows,
+ *  never a client-declared count. */
 export function completionMarker(
   session: ImportedSession,
   plan: { id: string; logParts: number; metricParts: number; events: number },
+  identity?: ImportIdentity,
 ): ImportLog {
+  const tokens = session.modelCalls.reduce((n, c) => n + callTokens(c), 0);
   return {
     timeUnixNano: toNano(session.endMs),
     attributes: {
+      ...(identity ?? {}),
       "event.name": IMPORT_COMPLETE_EVENT,
       "session.id": session.sessionId,
       "import.plan": plan.id,
       "import.log_parts": plan.logParts,
       "import.metric_parts": plan.metricParts,
       "import.events": plan.events,
+      "import.session_start_ms": String(Math.floor(session.startMs)),
+      "import.tokens": String(tokens),
     },
   };
 }
