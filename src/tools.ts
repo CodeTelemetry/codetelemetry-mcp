@@ -1992,7 +1992,8 @@ export const TOOLS: ToolDef[] = [
           (cost
             ? "cost.uploadCostUsd prices every estimated token before the included seat tokens (a real bill is at most this); cost.monthlyUsdOneSeat is one seat at the last-30-day pace. "
             : `Prices could not be read; see ${endpointsFor(ctx).apiBase}/estimate. `) +
-          "Show the user the totals by month and the gone-for-good cutoff; to import, call import_history with dryRun true first.",
+          "Show the user the totals by month and the gone-for-good cutoff; to import, call import_history with dryRun true first " +
+          `and sinceDays ${sinceDays} (its default is 30 days, so without it the import covers less than this estimate).`,
       };
     },
   },

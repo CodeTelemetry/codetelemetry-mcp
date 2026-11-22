@@ -151,6 +151,7 @@ test("estimate_history needs no key, sends nothing but the price-list read, and 
   assert.equal(r.goneForGood.claudeCleanupPeriodDays, 45);
   assert.match(r.goneForGood.claudeCutoffIso, /^\d{4}-\d{2}-\d{2}T00:00:00\.000Z$/);
   assert.match(r.goneForGood.neverRecovered, /latency/);
+  assert.match(r.note, /import_history with dryRun true first and sinceDays 364/, "the import is pointed at the estimated window");
   const text = JSON.stringify(r);
   assert.ok(!/\.jsonl/.test(text), "never local file paths");
   assert.ok(!text.includes("Fix the login bug"), "never content");

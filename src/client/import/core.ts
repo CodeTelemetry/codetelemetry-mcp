@@ -85,7 +85,9 @@ export type ImportRunBilling = ImportBilling & {
   estimatedTokens: number;
   /** max(0, tokens - includedTokensRemaining) × price / 1e6; 0 when unlimited. */
   estimatedCostUsd: number;
-  /** The whole run fits in the included allowance plus prepaid credit. */
+  /** Every eligible session fits in the included allowance plus prepaid
+   *  credit; false on a real run that skipped sessions for budget (whose
+   *  estimatedTokens then cover only the sessions it kept). */
   affordable: boolean;
 };
 
@@ -502,11 +504,14 @@ export async function importPrepared(prepared: Prepared[], o: ImportPreparedOpti
       budgetCut = over.length;
       for (const r of over) bump(summaries.get(r.p.source)!, "budget");
       const fitTokens = toSend.reduce((n, r) => n + tokenTotal(r.p.tokens), 0);
+      // The run's billing covers what it sends, not the sessions it skipped:
+      // the whole window's cost is in the error below.
+      runBilling = { ...runBilling, estimatedTokens: fitTokens, estimatedCostUsd: roundUsd(cost(fitTokens)) };
       errors.push(
         `Stopped before ${budgetCut} session(s): importing every eligible session would cost about ` +
           `${usd(cost(cumulative))} (${cumulative} tokens at ${usd(priced.tokenPriceUsdPerMillion)} per million, after ` +
           `${Math.floor(priced.includedTokensRemaining)} included seat tokens left this month), more than the ${usd(credit)} prepaid credit. ` +
-          (toSend.length ? `The ${toSend.length} oldest session(s) that fit (${fitTokens} tokens) were imported. ` : "Nothing was sent. ") +
+          (toSend.length ? `This run was limited to the ${toSend.length} oldest session(s) that fit (${fitTokens} tokens). ` : "Nothing was sent. ") +
           "Add credit or seats, then re-run the same command; finished sessions are skipped.",
       );
     }

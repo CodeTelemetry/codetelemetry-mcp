@@ -12,7 +12,7 @@ import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { runEstimate } from "../../src/client/import/run.ts";
+import { runEstimate, runImport } from "../../src/client/import/run.ts";
 import { estimateFiles, type UploadFile } from "../../src/client/import/browser.ts";
 import {
   ESTIMATE_DEFAULT_DAYS,
@@ -24,6 +24,7 @@ import {
 } from "../../src/client/import/estimate.ts";
 import { run as cli } from "../../src/client/cli.ts";
 import { claudeTranscript, codexPath, codexRollout, put } from "./historyFixtures.ts";
+import { API, FakeServer, INGEST, KEY } from "./importFake.ts";
 
 const DAY = 86_400_000;
 const NOW = Date.parse("2026-10-10T12:00:00Z");
@@ -103,6 +104,35 @@ test("runEstimate: sessions and tokens per source, month and day, over the retai
   const recent = await runEstimate({ nowMs: NOW, sinceMs: Date.parse("2026-09-15T00:00:00Z"), claudeDir: h.claudeDir, codexDir: h.codexDir });
   assert.equal(recent.totals.tokens, 500 + 2100);
   assert.deepEqual(recent.months, [{ month: "2026-10", sessions: 2, tokens: 2600 }]);
+  assert.ok(recent.warnings.some((w) => /covers only 25\.5 day\(s\).*last-30-day pace/.test(w)), "a window under 30 days says its pace is understated");
+});
+
+test("runEstimate matches an import dry run, a duplicated session counts its in-window copy, and a short window says its pace is understated", async () => {
+  const h = history();
+  // sess-a again, in a second file whose events are all before the window: it
+  // must not hide the in-window copy (runImport dedupes only in-window plans).
+  const old = Date.parse("2026-02-01T10:00:00Z");
+  put(path.join(h.claudeDir, "-work-aaa", "sess-a-copy.jsonl"), claudeTranscript("sess-a", [{ ts: old, input: 1, output: 1 }]), Date.parse("2026-09-20T00:00:00Z"));
+  const since = Date.parse("2026-09-01T00:00:00Z");
+  const e = await runEstimate({ nowMs: NOW, sinceMs: since, claudeDir: h.claudeDir, codexDir: h.codexDir });
+  const server = new FakeServer();
+  const dry = await runImport({
+    key: KEY, endpoints: { apiBase: API, ingestEndpoint: INGEST }, sinceMs: since, nowMs: NOW, dryRun: true,
+    fetchImpl: server.fetch as typeof fetch, sleep: async () => {}, claudeDir: h.claudeDir, codexDir: h.codexDir, ledgerPath: path.join(h.root, "ledger.json"),
+  });
+  const tok = (t: { input: number; output: number; cacheRead: number; cacheCreation: number }) => t.input + t.output + t.cacheRead + t.cacheCreation;
+  assert.equal(e.totals.sessions, dry.totals.sessions);
+  assert.equal(e.totals.tokens, dry.sources.reduce((n, s) => n + tok(s.tokens), 0));
+  assert.equal(e.totals.tokens, 1510 + 2100, "the in-window copy of sess-a is counted");
+  const months = new Map<string, { sessions: number; tokens: number }>();
+  for (const s of dry.sources) for (const m of s.months) {
+    const b = months.get(m.month) ?? { sessions: 0, tokens: 0 };
+    months.set(m.month, { sessions: b.sessions + m.sessions, tokens: b.tokens + m.tokens });
+  }
+  assert.deepEqual(e.months, [...months].sort().map(([month, b]) => ({ month, ...b })));
+
+  const week = await runEstimate({ nowMs: NOW, sinceMs: NOW - 7 * DAY, claudeDir: h.claudeDir, codexDir: h.codexDir });
+  assert.ok(week.warnings.some((w) => /covers only 7 day\(s\).*last-30-day pace/.test(w)), week.warnings.join("; "));
 });
 
 test("estimateFiles: the browser estimate of the same files matches the CLI's, with no key and no network", async () => {

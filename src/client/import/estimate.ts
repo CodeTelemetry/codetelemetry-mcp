@@ -174,6 +174,13 @@ export class EstimateBuilder {
       .map(([day, tokens]) => ({ day, tokens }));
     const warnings = [...this.#warnings];
     if (this.#warningsDropped) warnings.push(`…and ${this.#warningsDropped} more warning(s)`);
+    const windowDays = (this.#nowMs - this.#sinceMs) / DAY_MS;
+    if (windowDays < TRAILING_DAYS) {
+      warnings.push(
+        `The window covers only ${Math.max(0, Math.round(windowDays * 10) / 10)} day(s), so the last-30-day pace ` +
+          "(trailing30dTokens, and any monthly price from it) is understated; widen the window to 30 days or more.",
+      );
+    }
     warnings.push(
       "Sessions CodeTelemetry already captured live are counted here too; an import checks with the server and skips them.",
     );

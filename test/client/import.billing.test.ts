@@ -105,7 +105,11 @@ test("a real import never starts a session the credit cannot cover, and resumes 
   assert.equal(r.remaining, 1);
   assert.equal(r.sources.reduce((n, s) => n + (s.skipped.budget ?? 0), 0), 1);
   assert.equal(r.billing?.affordable, false);
+  // A cut run's billing prices what it sent, never the sessions it skipped.
+  assert.equal(r.billing?.estimatedTokens, firstTwo);
+  assert.equal(r.billing?.estimatedCostUsd, Math.round(sessions[1].tokens) / 1e6);
   assert.ok(r.errors.some((e) => /Stopped before 1 session\(s\)/.test(e) && /prepaid credit/.test(e)), r.errors.join("; "));
+  assert.ok(r.errors.some((e) => /limited to the 2 oldest session\(s\) that fit/.test(e)), r.errors.join("; "));
   assert.ok(!r.errors.some((e) => /HTTP 402/.test(e)), "no ingest refusal happened");
   const last = sessions[2].sid;
   assert.equal(server.logs.filter((l) => l.sid === last).length, 0, "the unaffordable session sent nothing");

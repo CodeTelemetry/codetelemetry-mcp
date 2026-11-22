@@ -331,9 +331,14 @@ export async function runEstimate(opts: EstimateRunOptions = {}): Promise<Histor
       builder.warn(`${sessionKey} appears in more than one file; only the first is counted`);
       continue;
     }
-    seen.add(sessionKey);
     const outcome = builder.add(parsed.session);
-    if (outcome !== "added") builder.skip(c.source, outcome);
+    if (outcome !== "added") {
+      builder.skip(c.source, outcome);
+      continue;
+    }
+    // As runImport: only a session counted in the window claims its key, so
+    // an out-of-window copy never hides an in-window one.
+    seen.add(sessionKey);
   }
   if (timedOut) builder.warn("The estimate reached its time bound; the totals cover only the sessions read (see skipped.time_limit).");
   return builder.finish({
