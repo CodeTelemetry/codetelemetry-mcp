@@ -192,7 +192,7 @@ contexts use the established scope-v1 device flow.
 | Tool | What it does |
 | --- | --- |
 | `count_reply_phrases` | Count how often your own phrases appear in your Claude model replies, per day or week and per model (turns, turns with a match, per-phrase counts). Plain-text phrases with `{a|b}` / `[a|b]` groups, whole-word and case-insensitive; main-thread replies only; counts and session references, never reply text. |
-| `estimate_history` | Price this machine's past Claude Code / Codex sessions before importing them: sessions and tokens per source, UTC month and day, oldest and newest session, last-30-day pace, priced with the public price list. Needs no key and sends nothing else; says from when uncaptured Claude Code sessions are gone for good (`cleanupPeriodDays`). |
+| `estimate_history` | Price this machine's past Claude Code / Codex sessions before importing them: sessions and tokens per source, UTC month and day, oldest and newest session, last-30-day pace, priced with the public price list. Needs no key and sends nothing else; says from when a Claude Code session survives only if it was captured live or is still on disk (`cleanupPeriodDays`). |
 | `import_history` | Import this machine's past Claude Code / Codex sessions (`~/.claude/projects`, `~/.codex/sessions`) through the normal ingest, tagged as imported. Dry run by default; skips sessions captured live or already imported; resumes interrupted imports; pages with `remaining`. Content defaults to `live` (what your live exporters send); `none` opts out. Imported tokens are billed like live usage: the result's `billing` prices the run, and a real import starts no session the prepaid credit cannot cover. Rows carry the signed-in account's identity as live rows do (`identity: false` omits it). |
 | `workspace_context` | Save, list or select persistent verified workspace contexts. Repository bindings contain no credentials; cold MCP processes restore the bound context. |
 | `bootstrap_workspace` | Create or select an organization, authorize once, and resume funding, repository-local telemetry, Grader publication, Terraform artifacts and GitHub gate verification. |
@@ -437,9 +437,10 @@ link to the pricing page. In a browser, `estimateFiles` from
 (`HistoryEstimate`, `EstimateBuilder`, `fetchPricing`, `priceEstimate`).
 
 Some data is gone for good. Claude Code deletes a transcript at startup once it
-is `cleanupPeriodDays` (settings.json, default 30) past its last activity, so
-sessions CodeTelemetry did not capture before then cannot be imported; the
-estimate names the cutoff date. Codex keeps rollouts until they are removed. No
+is `cleanupPeriodDays` (settings.json, default 30) past its last activity, so a
+session from before then can be imported only if its transcript is still on disk
+(the sweep leaves subagent transcripts and can miss a file); the estimate names
+the cutoff date. Codex keeps rollouts until they are removed. No
 import recovers what only live telemetry carries: per-request latency and
 retries, permission decisions, active time, lines-of-code / commit /
 pull-request counters, model responses and tool output content.

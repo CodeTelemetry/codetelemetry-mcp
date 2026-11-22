@@ -1,7 +1,7 @@
 {
   "serverName": "codetelemetry",
   "serverVersion": "0.7.0",
-  "registryHash": "61a8660b080067f890e64ea89844a93a1880ca7b408926aaa2745fb50439faab",
+  "registryHash": "fa9df3510d2a587d1fc17339fcca4436662e7954c2c7867d37523cffa759f0c4",
   "toolCount": 35,
   "tools": [
     {
@@ -1907,7 +1907,7 @@
     {
       "name": "estimate_history",
       "title": "Estimate past sessions before importing them",
-      "description": "Use this when the user asks what importing their EXISTING local Claude Code or Codex history would cost, or how much history they have. Needs no key and sends nothing: it reads ~/.claude/projects and ~/.codex/sessions on this machine and returns sessions and tokens per source, per UTC month and per day, the oldest and newest session, and the last-30-day pace, priced with CodeTelemetry's public price list when it can be read. Imported tokens are billed like live usage: this month's included seat tokens first, then the per-million price from prepaid credit. Claude Code deletes local transcripts cleanupPeriodDays (default 30) after their last activity, so older uncaptured Claude sessions are gone for good; goneForGood says from when. Sessions already captured live are counted here but skipped by an import. To import, call import_history (dry run first).",
+      "description": "Use this when the user asks what importing their EXISTING local Claude Code or Codex history would cost, or how much history they have. Needs no key and sends nothing: it reads ~/.claude/projects and ~/.codex/sessions on this machine and returns sessions and tokens per source, per UTC month and per day, the oldest and newest session, and the last-30-day pace, priced with CodeTelemetry's public price list when it can be read. Imported tokens are billed like live usage: this month's included seat tokens first, then the per-million price from prepaid credit. Claude Code deletes local transcripts cleanupPeriodDays (default 30) after their last activity, so an older Claude session survives only if it was captured live or its transcript is still on disk; goneForGood says from when. Sessions already captured live are counted here but skipped by an import. To import, call import_history (dry run first).",
       "inputSchema": {
         "type": "object",
         "properties": {
