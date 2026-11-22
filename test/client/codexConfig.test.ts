@@ -374,6 +374,10 @@ test("repository hook deduplicates unchanged tool events but observes same-turn 
   await run("PostToolUse", workspaceA, { tool_name: "Bash" });
   assert.equal(capturedRequests(capturePath).length, 1, "unchanged prompt and tool events do not redeliver");
 
+  const originAttrs = capturedRequests(capturePath)[0].resourceLogs[0].scopeLogs[0].logRecords[0].attributes;
+  assert.equal(originAttrs.find((attr: any) => attr.key === "vcs.repository.url.full")?.value.stringValue,
+    "https://github.com/example/repository-one");
+
   const remoteChange = spawnSync(
     "git",
     ["-C", workspaceA, "remote", "set-url", "origin", "https://github.com/example/repository-two.git"],

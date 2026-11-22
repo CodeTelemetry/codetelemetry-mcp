@@ -1,3 +1,4 @@
+import { githubOrigin } from "./repositoryOrigin.ts";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -144,6 +145,7 @@ function git(cwd, args) {
   }).trim(); }
   catch { return ""; }
 }
+const githubOrigin = ${githubOrigin.toString()};
 const repositoryRemoteIdentity = ${normalizeRepositoryRemote.toString()};
 const selectCodexOtelExporterLine = ${selectCodexOtelExporterLine.toString()};
 function remoteName(value) {
@@ -382,7 +384,9 @@ async function main() {
   if (!permitsAuthorization(url, destination.headers)) return;
   const cwd = path.resolve(String(input.new_cwd || input.cwd || process.cwd()));
   const root = git(cwd, ["rev-parse", "--show-toplevel"]) || cwd;
-  const remote = repositoryRemoteIdentity(git(root, ["config", "--get", "remote.origin.url"]));
+  const rawRemote = git(root, ["config", "--get", "remote.origin.url"]);
+  const remote = repositoryRemoteIdentity(rawRemote);
+  const originUrl = githubOrigin(rawRemote);
   const initialCommit = git(root, ["rev-list", "--max-parents=0", "HEAD"]).split(/\s+/).filter(Boolean).sort()[0] || "";
   const commonDir = git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
   const commonRoot = commonDir.endsWith(path.sep + ".git") ? path.dirname(commonDir) : root;
@@ -404,6 +408,7 @@ async function main() {
     attr("code.workspace.path", cwd),
     attr("hook.event", hookEvent),
   ];
+  if (originUrl) attributes.push(attr("vcs.repository.url.full", originUrl));
   if (sessionId) attributes.push(attr("session.id", sessionId));
   const body = JSON.stringify({ resourceLogs: [{
     resource: { attributes: [attr("service.name", "codetelemetry-connect")] },

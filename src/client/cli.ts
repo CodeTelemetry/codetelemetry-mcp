@@ -7,6 +7,7 @@
 // The key is only ever read from disk / the device flow and used in-process; the
 // CLI prints it masked and never echoes the plaintext.
 
+import { reportRolloutRepositories } from "./rolloutRepository.ts";
 import fs from "node:fs";
 import { joinOrganization, workspaceProject } from "./join.ts";
 import { importWorkspaceHistory } from "./workspaceImport.ts";
@@ -64,6 +65,9 @@ function parse(argv: string[]): Parsed {
 const HELP = `codetelemetry-connect — wire Claude Code, OpenAI Codex or pi into CodeTelemetry
 
 Usage:
+  codetelemetry-connect repository-metadata <rollout files> [--send]
+                         Preview GitHub origins and parent IDs. --send uses CODETELEMETRY_INGEST_KEY.
+  codetelemetry-connect repository-metadata --state <Codex state database> <thread IDs> [--send]
   codetelemetry-connect join --organization-id ID --client claude|codex [--project PATH]
                          Connect this project; resume the same command after interruption.
   codetelemetry-connect import --workspace NAME --preview
@@ -459,6 +463,12 @@ export async function run(argv: string[]): Promise<number> {
 
   if (flags.help || flags.h || cmd === "help") {
     out(HELP);
+    return 0;
+  }
+
+  if (cmd === "repository-metadata") {
+    if (unknownFlag(flags, new Set(["send","state"])) || (flags.state !== undefined && typeof flags.state !== "string") || (flags.send !== undefined && typeof flags.send !== "boolean")) throw new Error("Put --send after the selected files.");
+    out(JSON.stringify(await reportRolloutRepositories(_.slice(1), flags.send === true, str(flags, "state"))));
     return 0;
   }
 

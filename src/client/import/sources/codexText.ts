@@ -19,6 +19,7 @@
 //                     when an exit code / error flag is actually recorded.
 // Latency histograms and tool decisions are not in rollouts and never invented.
 
+import { githubOrigin } from "../../repositoryOrigin.ts";
 import type { ContentPolicy, ImportedModelCall, ImportedPrompt, ImportedSession, ImportedToolCall } from "../model.ts";
 import { MAX_EVENTS_PER_SESSION, MAX_PROMPT_CHARS, MAX_TOOL_INPUT_CHARS, NO_CONTENT, capText } from "../model.ts";
 
@@ -75,6 +76,8 @@ export class CodexSessionAccumulator {
   readonly #verdicts = new Map<string, boolean>();
   readonly #warnings = new Set<string>();
   #sessionId = "";
+  #repositoryUrl?: string;
+  #parentThreadId?: string;
   #cwd: string | null = null;
   #model = "";
   #prevTotal: Usage | null = null;
@@ -110,6 +113,11 @@ export class CodexSessionAccumulator {
       if (!this.#sessionId) {
         if (typeof p.id === "string" && p.id) this.#sessionId = p.id;
         else if (typeof p.session_id === "string" && p.session_id) this.#sessionId = p.session_id;
+        if (this.#sessionId) {
+          this.#repositoryUrl = githubOrigin(p.git?.repository_url);
+          if (typeof p.parent_thread_id === "string" && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(p.parent_thread_id) && p.parent_thread_id !== this.#sessionId)
+            this.#parentThreadId = p.parent_thread_id;
+        }
       }
       if (!this.#cwd && typeof p.cwd === "string" && p.cwd) this.#cwd = p.cwd;
       if (typeof p.model === "string" && p.model) this.#model = p.model;
@@ -298,6 +306,8 @@ export class CodexSessionAccumulator {
       if (e.tsMs < startMs) startMs = e.tsMs;
       if (e.tsMs > endMs) endMs = e.tsMs;
     }
+    const matchesRollout = !!this.#sessionId && meta.files.length > 0 &&
+      meta.files.every(file => codexSessionIdFromName(file) === this.#sessionId);
     const warnings = [...this.#warnings];
     if (this.#pending.size > 0) warnings.push(`${this.#pending.size} tool call(s) without a recorded output (not imported)`);
     return {
@@ -306,6 +316,8 @@ export class CodexSessionAccumulator {
       files: meta.files,
       fileSig: meta.fileSig,
       cwd: this.#cwd,
+      ...(matchesRollout && this.#repositoryUrl ? { repositoryUrl: this.#repositoryUrl } : {}),
+      ...(matchesRollout && this.#parentThreadId ? { parentThreadId: this.#parentThreadId } : {}),
       startMs,
       endMs,
       prompts,

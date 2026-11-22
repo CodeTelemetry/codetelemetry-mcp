@@ -28,6 +28,8 @@ export const PUBLIC_MODULES = [
   "src/client/piConfig",
   "src/client/plan",
   "src/client/repositoryHook",
+  "src/client/repositoryOrigin",
+  "src/client/rolloutRepository",
   "src/client/settings",
   "src/client/hostMetrics",
   "src/client/yaml",
