@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { looksLikeKey, scrub as scrubKey } from "../keys.ts";
+import { looksLikeKey } from "../keys.ts";
+import { CREDENTIAL_RE, holdsCredential, scrubCredentials } from "../collector/scrub.ts";
 import type { ContentPolicy, ImportLog } from "../import/model.ts";
 
 export const KIRO_LIMITS = Object.freeze({
@@ -20,7 +21,7 @@ export type KiroRecordCounters = {unknown: number; malformed: number; duplicates
 export const emptyRecordState = (): KiroRecordState => ({seen: [], calls: []});
 export const emptyRecordCounters = (): KiroRecordCounters => ({unknown: 0, malformed: 0, duplicates: 0, callsEvicted: 0, unsupportedDetails: 0});
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
-export const KIRO_CREDENTIAL_RE = /(?:-----BEGIN [A-Z ]+(?:PRIVATE KEY|CREDENTIAL)-----|\bBearer\s+[A-Za-z0-9._~+\/-]+=*|\b(?:api[_-]?key|authorization|client[_-]?secret|password|passwd|secret|token|accountkey)\s*[:=]\s*\S+|\bAKIA[0-9A-Z]{16}\b|\bASIA[0-9A-Z]{16}\b|\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}\b|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bxox[baprs]-[A-Za-z0-9-]{10,}\b|\bnpm_[A-Za-z0-9]{20,}\b|\bAIza[A-Za-z0-9_-]{20,}\b|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b|https?:\/\/[^\s/]*:[^\s/@]+@)/i;
+export const KIRO_CREDENTIAL_RE = CREDENTIAL_RE;
 const sourceId = (value: unknown): string | null => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(value) && !KIRO_CREDENTIAL_RE.test(value) && !looksLikeKey(value) ? value : null;
 const object = (value: unknown): Record<string, unknown> | null => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 export class KiroSourceConflictError extends Error {
@@ -45,13 +46,6 @@ function sourceNano(value: unknown): string | null {
   if (!Number.isFinite(ms) || new Date(ms).toISOString().slice(0, 19) !== match[1]) return null;
   return String(BigInt(ms) * 1_000_000n + BigInt((match[2] ?? "").padEnd(9, "0")));
 }
-function scrub(value: string, max: number): string {
-  return scrubKey(value)
-    .replace(/-----BEGIN ([A-Z ]*(?:PRIVATE KEY|CREDENTIAL))-----[\s\S]*?(?:-----END \1-----|$)/gi,"<REDACTED>")
-    .replace(new RegExp(KIRO_CREDENTIAL_RE.source, "gi"), "<REDACTED>")
-    .replace(/(["']?(?:api[_-]?key|authorization|client[_-]?secret|password|passwd|secret|token)["']?\s*[:=]\s*["']?)[^\s,"'}]+/gi, "$1<REDACTED>")
-    .slice(0, max);
-}
 
 /** Unknown argument fields can contain private provider metadata. Do not
  * forward them merely because the tool's display name is familiar. */
@@ -74,7 +68,7 @@ function allowedToolArgs(name:string,value:unknown):Record<string,unknown>|null 
 function privateInput(name:string,value:unknown):string|undefined {
  const args=allowedToolArgs(name,value);if(!args) return undefined;
  const encoded=JSON.stringify(args);if(encoded.length>KIRO_LIMITS.toolInputChars) return undefined;
- if(Object.values(args).some(item=>typeof item==="string" && (scrub(item,item.length)!==item || /<REDACTED>|cot_…/.test(item)))) return undefined;
+ if(Object.values(args).some(item=>typeof item==="string" && holdsCredential(item))) return undefined;
  return encoded;
 }
 
@@ -104,7 +98,7 @@ export function applyKiroRecord(state: KiroRecordState, line: Uint8Array, sessio
   if (kind === "user") {
     if (typeof payload.content === "string") {
       source.contentLength = payload.content.length;
-      if (policy.prompts) source.content = scrub(payload.content, KIRO_LIMITS.promptChars);
+      if (policy.prompts) source.content = scrubCredentials(payload.content, KIRO_LIMITS.promptChars);
     }
   } else if (kind === "tool_call") {
     const callId = sourceId(payload.toolCallId), name = sourceId(payload.toolName);

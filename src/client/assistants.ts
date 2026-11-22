@@ -9,7 +9,7 @@
 
 /** Clients onboarding can configure (`--client`, MCP `client`), in display
  *  order. Twin of the registry's ONBOARDING_CLIENT_IDS. */
-export const ONBOARD_CLIENTS = ["claude", "codex", "pi", "kiro"] as const;
+export const ONBOARD_CLIENTS = ["claude", "codex", "pi", "kiro", "cursor"] as const;
 export type OnboardClient = (typeof ONBOARD_CLIENTS)[number];
 
 export function isOnboardClient(value: unknown): value is OnboardClient {
@@ -18,4 +18,4 @@ export function isOnboardClient(value: unknown): value is OnboardClient {
 
 /** Assistants a session search can be filtered to. Twin of the registry's
  *  SESSION_FILTER_ASSISTANT_IDS. */
-export const SESSION_FILTER_ASSISTANTS = ["claude", "codex", "kiro"] as const;
+export const SESSION_FILTER_ASSISTANTS = ["claude", "codex", "kiro", "cursor"] as const;

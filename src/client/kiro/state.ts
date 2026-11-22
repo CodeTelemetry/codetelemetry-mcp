@@ -1,7 +1,4 @@
-import fs from "node:fs/promises";
-import { constants } from "node:fs";
-import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { claimCollectorState, cleanCollectorState, readBoundedJson as readBounded, writeAtomicJson as writeAtomic } from "../collector/state.ts";
 import { KIRO_LIMITS, type KiroRecordState } from "./records.ts";
 
 export const KIRO_SESSION_ID = /^sess_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
@@ -53,103 +50,24 @@ export function normalizeKiroCheckpoint(value: unknown, rootHash: string, destin
   if(new Set([...v.sessions,...parked].map(row=>(row as KiroSessionCheckpoint).id)).size!==v.sessions.length+parked.length) throw new Error("duplicate Kiro checkpoint ownership");
   return {version:3,rootHash,destinationHash,cursor:Number(v.cursor),retirementCursor:Number(retirementCursor),sessions:(v.sessions as KiroSessionCheckpoint[]).map(row=>({...row,activationOffset:row.activationOffset??row.offset})),parked:parked as KiroSessionCheckpoint[]};
 }
+// The state primitives are shared with the other collectors; these wrappers
+// keep Kiro's names, signatures and error text.
 export async function readBoundedJson(file: string, maxBytes: number): Promise<unknown | null> {
-  let handle: Awaited<ReturnType<typeof fs.open>>;
-  try {handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));}
-  catch (error) {if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw new Error("Kiro state file is unreadable");}
-  try {
-    const stat = await handle.stat();
-    if (!stat.isFile() || stat.size > maxBytes) throw new Error("Kiro state file exceeds bound");
-    const bytes = Buffer.alloc(Math.min(maxBytes + 1, stat.size + 1));
-    const {bytesRead} = await handle.read(bytes, 0, bytes.length, 0);
-    if (bytesRead > maxBytes) throw new Error("Kiro state file exceeds bound");
-    try {return JSON.parse(new TextDecoder("utf-8", {fatal: true}).decode(bytes.subarray(0, bytesRead)));}
-    catch {throw new Error("Kiro state file is not valid JSON");}
-  } finally {await handle.close();}
+  return readBounded(file, maxBytes, "Kiro");
 }
 export async function writeAtomicJson(file: string, value: unknown, maxBytes: number): Promise<void> {
-  const body = JSON.stringify(value);
-  if (Buffer.byteLength(body) > maxBytes) throw new Error("Kiro persisted state exceeds byte bound");
-  const directory = path.dirname(file);
-  await fs.mkdir(directory, {recursive: true, mode: 0o700});
-  if ((await fs.lstat(directory)).isSymbolicLink()) throw new Error("Kiro state directory must not be a symlink");
-  const temporary = path.join(directory, `${path.basename(file)}.tmp`);
-  const handle = await fs.open(temporary, "wx", 0o600);
-  try {await handle.writeFile(body); await handle.sync();}
-  catch {await fs.unlink(temporary).catch(() => {}); throw new Error("Kiro state write failed");}
-  finally {await handle.close();}
-  try {
-    await fs.rename(temporary, file);
-    if (process.platform !== "win32") {
-      const dir = await fs.open(directory, "r");
-      try {await dir.sync();} finally {await dir.close();}
-    }
-  } catch {await fs.unlink(temporary).catch(() => {}); throw new Error("Kiro state commit failed");}
+  return writeAtomic(file, value, maxBytes, "Kiro");
 }
-
 
 /** One fixed temporary per owned file bounds crash leftovers as well as live state. */
 export async function cleanKiroState(directory: string): Promise<void> {
-  const known = new Set(["collector.lock", "checkpoint.json", "pending.json", "health.json", "collector.recovery"]);
-  const temporary = new Map([["checkpoint.json.tmp", KIRO_LIMITS.checkpointBytes], ["pending.json.tmp", KIRO_LIMITS.spoolBytes], ["health.json.tmp", 4096]]);
-  const dir = await fs.opendir(directory, {bufferSize: 8});
-  let count = 0;
-  try {
-    for await (const entry of dir) {
-      if (++count > 16 || !entry.isFile() || (!known.has(entry.name) && !temporary.has(entry.name) && !/^owner-[a-f0-9-]{36}[.]tmp$/.test(entry.name))) throw new Error("unrecognized Kiro state entry");
-      const limit = /^owner-[a-f0-9-]{36}[.]tmp$/.test(entry.name) ? 1024 : temporary.get(entry.name);
-      if (limit !== undefined) {
-        const file = path.join(directory, entry.name);
-        const stat = await fs.lstat(file);
-        if (stat.size > limit || !stat.isFile()) throw new Error("Kiro temporary state exceeds bound");
-        await fs.unlink(file);
-      }
-    }
-  } finally {await dir.close().catch(() => {});}
+  return cleanCollectorState(directory, {maxEntries: 16,
+    files: ["collector.lock", "checkpoint.json", "pending.json", "health.json", "collector.recovery"],
+    temporaries: {"checkpoint.json.tmp": KIRO_LIMITS.checkpointBytes, "pending.json.tmp": KIRO_LIMITS.spoolBytes, "health.json.tmp": 4096}}, "Kiro");
 }
 
 /** Exactly one process owns a state directory. Stale dead-PID leases recover;
  * an unknown/live owner is preserved instead of risking overlapping capture. */
 export async function claimKiroState(directory: string): Promise<() => Promise<void>> {
-  await fs.mkdir(directory, {recursive: true, mode: 0o700});
-  if ((await fs.lstat(directory)).isSymbolicLink()) throw new Error("Kiro state directory must not be a symlink");
-  const file = path.join(directory, "collector.lock");
-  const token = randomUUID();
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      // Publish a complete owner atomically; a crash before link leaves no
-      // ambiguous half-written primary lease.
-      const temporary = path.join(directory, `owner-${token}.tmp`);
-      const lock = await fs.open(temporary, "wx", 0o600);
-      try {
-        await lock.writeFile(JSON.stringify({version: 1, pid: process.pid, token})); await lock.sync();
-        await fs.link(temporary, file);
-      } finally {await lock.close(); await fs.unlink(temporary).catch(() => {});}
-      return async () => {
-        const owner = await readBoundedJson(file, 1024) as {token?: string} | null;
-        if (owner?.token === token) await fs.unlink(file);
-      };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const owner = await readBoundedJson(file, 1024) as {pid?: number} | null;
-      if (!Number.isSafeInteger(owner?.pid) || (owner?.pid ?? 0) < 1) throw new Error("Kiro collector ownership is unknown");
-      try {process.kill(owner!.pid!, 0); throw new Error("Kiro collector is already running");}
-      catch (cause) {
-        if ((cause as NodeJS.ErrnoException).code !== "ESRCH") throw cause;
-        // Serialize stale cleanup so two recovering processes cannot unlink
-        // the other's newly published live owner.
-        const recoveryFile = path.join(directory, "collector.recovery");
-        let recovery: Awaited<ReturnType<typeof fs.open>>;
-        try {recovery = await fs.open(recoveryFile, "wx", 0o600);}
-        catch {throw new Error("Kiro ownership recovery needs inspection");}
-        try {
-          await recovery.writeFile(JSON.stringify({pid: process.pid, token})); await recovery.sync();
-          const current = await readBoundedJson(file, 1024) as {pid?: number; token?: string} | null;
-          if (current?.pid !== owner!.pid || current?.token !== (owner as {token?: string}).token) throw new Error("Kiro ownership changed during recovery");
-          await fs.unlink(file);
-        } finally {await recovery.close(); await fs.unlink(recoveryFile);}
-      }
-    }
-  }
-  throw new Error("Kiro collector ownership changed during recovery");
+  return claimCollectorState(directory, "Kiro");
 }

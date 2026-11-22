@@ -16,6 +16,8 @@ import {
 } from "./connectivity.ts";
 import { keyHash, mask, assertKey } from "./keys.ts";
 import { enableKiroService, type KiroServiceOptions } from "./kiro/service.ts";
+import { cursorPreflight, type CursorHost } from "./cursor/preflight.ts";
+import { installCursor, type CursorInstallResult } from "./cursor/command.ts";
 import type { OnboardClient } from "./assistants.ts";
 
 export type OnboardStep = { name: string; ok: boolean; detail: string };
@@ -27,6 +29,8 @@ export type OnboardResult = {
   test: SendTestResult | null;
   verify: ConfirmResult | null;
   steps: OnboardStep[];
+  /** Cursor only: what was installed where, the hook and service state, and the capture mode. */
+  cursor?: Pick<CursorInstallResult, "installed" | "hooks" | "service" | "capture" | "advice">;
 };
 
 export type { OnboardClient };
@@ -49,6 +53,11 @@ export type OnboardOptions = {
   /** Kiro service activation; false configures a deliberate foreground-only source. */
   activateCollector?: boolean;
   kiroService?: KiroServiceOptions;
+  /** Cursor only. `identity` sends the Cursor account email; like
+   *  `settings.enrich` it is true, false, or undefined to keep the stored
+   *  choice. `hooksOnly` installs no service, `hooksManual` leaves hooks.json
+   *  unedited, `clearNetwork` forgets recorded proxy settings. */
+  cursor?: { identity?: boolean; hooksOnly?: boolean; hooksManual?: boolean; clearNetwork?: boolean; host?: CursorHost };
   /** Receives human-facing, already-masked progress lines. */
   logger?: (msg: string) => void;
 };
@@ -58,6 +67,14 @@ export async function onboard(opts: OnboardOptions): Promise<OnboardResult> {
   const steps: OnboardStep[] = [];
   const client = resolveClient(opts.client);
   if (client.id === "kiro" && opts.settings?.scope === "project") throw new Error("Kiro V3 capture is per-user; project scope is unsupported. Use a separate CodeTelemetry collector config.");
+  // Cursor: everything this machine can refuse is refused here, before a key
+  // is requested and before anything is written.
+  const cursorPlan = client.id === "cursor" ? cursorPreflight({
+    scope: opts.settings?.scope, configPath: opts.settings?.path,
+    hooksOnly: opts.cursor?.hooksOnly, hooksManual: opts.cursor?.hooksManual, clearNetwork: opts.cursor?.clearNetwork,
+    ingestEndpoint: resolveEndpoints({ ingestEndpoint: opts.endpoints?.ingestEndpoint }).ingestEndpoint,
+    host: opts.cursor?.host,
+  }) : null;
 
   // 1. Acquire the key (paste or device flow). Plaintext stays in this function.
   let apiKey: string;
@@ -110,20 +127,39 @@ export async function onboard(opts: OnboardOptions): Promise<OnboardResult> {
   // 2. Write the local client config: Claude Code's settings.json env block,
   // Codex's ~/.codex/config.toml [otel] section, or pi's settings.json otel
   // block. The client descriptors (clients.ts) own paths and writers.
-  const settings = client.write({
-    key: apiKey,
-    ingestEndpoint: endpoints.ingestEndpoint,
-    configPath: client.resolveConfigPath({ scope: opts.settings?.scope, path: opts.settings?.path }),
-    enrich: opts.settings?.enrich,
-    repositoryObservation: opts.settings?.repositoryObservation,
-    backup: opts.settings?.backup,
-  });
-  steps.push({
-    name: "write_config",
-    ok: true,
-    detail: `${settings.created ? "created" : "updated"} ${settings.path} (${settings.wrote.length} ${client.noun})`,
-  });
-  log(`Wrote ${settings.wrote.length} ${client.noun} to ${settings.path}${settings.backupPath ? ` (backup: ${settings.backupPath})` : ""}`);
+  // Cursor instead installs its settings, hook program, collector and hook
+  // entries as one step that either completes or leaves nothing behind. It asks
+  // the ingest endpoint whether it serves Cursor records before it stores the key.
+  let settings: WriteResult;
+  let cursor: CursorInstallResult | null = null;
+  if (cursorPlan) {
+    cursor = await installCursor(cursorPlan, {
+      key: apiKey,
+      ingestEndpoint: endpoints.ingestEndpoint,
+      enrich: opts.settings?.enrich,
+      identity: opts.cursor?.identity,
+      backup: opts.settings?.backup,
+      fetchImpl: opts.fetchImpl,
+      log,
+    });
+    settings = cursor.settings;
+    steps.push(...cursor.steps);
+  } else {
+    settings = client.write({
+      key: apiKey,
+      ingestEndpoint: endpoints.ingestEndpoint,
+      configPath: client.resolveConfigPath({ scope: opts.settings?.scope, path: opts.settings?.path }),
+      enrich: opts.settings?.enrich,
+      repositoryObservation: opts.settings?.repositoryObservation,
+      backup: opts.settings?.backup,
+    });
+    steps.push({
+      name: "write_config",
+      ok: true,
+      detail: `${settings.created ? "created" : "updated"} ${settings.path} (${settings.wrote.length} ${client.noun})`,
+    });
+    log(`Wrote ${settings.wrote.length} ${client.noun} to ${settings.path}${settings.backupPath ? ` (backup: ${settings.backupPath})` : ""}`);
+  }
 
   // 2b. pi exports through its pi-otel extension, not a built-in exporter.
   // Check for it but never fail over it: config first is a valid order, and the
@@ -175,6 +211,12 @@ export async function onboard(opts: OnboardOptions): Promise<OnboardResult> {
     log(verify.landed ? `✓ Telemetry landed in ${verify.elapsedMs}ms` : "Telemetry not confirmed yet — it can take a moment to appear");
   }
 
+  // What was installed, where, the capture mode and how to remove it.
+  if (cursor) for (const line of cursor.summary) log(line);
+
   const ok = steps.every((s) => s.ok);
-  return { ok, key: { masked: mask(apiKey), keyHash: keyHash(apiKey) }, settings, test, verify, steps };
+  return {
+    ok, key: { masked: mask(apiKey), keyHash: keyHash(apiKey) }, settings, test, verify, steps,
+    ...(cursor ? { cursor: { installed: cursor.installed, hooks: cursor.hooks, service: cursor.service, capture: cursor.capture, advice: cursor.advice } } : {}),
+  };
 }

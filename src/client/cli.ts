@@ -16,10 +16,12 @@ import { bootstrapWorkspace, type BootstrapOptions } from "./bootstrap.ts";
 import { listWorkspaces, loadWorkspace, bindWorkspace, bindingOf, findWorkspaceBinding, sameWorkspace, writeCodexWorkspaceProfile } from "./workspaces.ts";
 import { runKiroCommand } from "./kiro/command.ts";
 import { PUBLIC_SESSIONS_HELP, runPublicSessionsCommand } from "./publicSessionsCommand.ts";
+import { cursorNodeNotice, runCursorCommand, type CursorCommandHost } from "./cursor/command.ts";
+import { CursorPreflightRefusal, cursorPreflight } from "./cursor/preflight.ts";
 import { spawn } from "node:child_process";
 import { onboard, type OnboardClient } from "./onboard.ts";
 import { resolveEndpoints, type SettingsScope } from "./config.ts";
-import { CLIENTS, PI_EXTENSION_HINT } from "./clients.ts";
+import { CLIENTS, CURSOR_SETUP_HINT, PI_EXTENSION_HINT } from "./clients.ts";
 import { ONBOARD_CLIENTS, isOnboardClient } from "./assistants.ts";
 import { looksLikeKey, mask } from "./keys.ts";
 import { runImport, runEstimate, type ImportRunResult } from "./import/run.ts";
@@ -34,7 +36,7 @@ import {
   type HistoryEstimate,
 } from "./import/estimate.ts";
 import { requestDeviceCode, pollForKey } from "./deviceClient.ts";
-import { sendTestEvent } from "./otlp.ts";
+import { sendTestEvent, type FetchLike } from "./otlp.ts";
 import { confirmLanded, verifyScope } from "./connectivity.ts";
 import type { ExpectedKeyScope } from "./connectivity.ts";
 import {
@@ -46,6 +48,10 @@ import {
   writeHostMetricsConfig,
   type HostMetricsOptions,
 } from "./hostMetrics.ts";
+
+/** The @codetelemetry/connect release this source is published as. Keep it in
+ *  step with packages/connect/package.json; a test fails when they differ. */
+export const CONNECT_VERSION = "0.4.0";
 
 type Parsed = { _: string[]; flags: Record<string, string | boolean> };
 
@@ -73,7 +79,7 @@ function parse(argv: string[]): Parsed {
   return { _, flags };
 }
 
-const HELP = `codetelemetry-connect — wire Claude Code, OpenAI Codex or pi into CodeTelemetry
+const HELP = `codetelemetry-connect — wire Claude Code, OpenAI Codex, pi, Kiro or Cursor into CodeTelemetry
 
 Usage:
   codetelemetry-connect repository-metadata <rollout files> [--send]
@@ -106,16 +112,20 @@ Usage:
   codetelemetry-connect estimate [opts]       Price past Claude Code / Codex
                                               sessions before importing them:
                                               no key, nothing sent (see below)
+  codetelemetry-connect cursor status|collect|enable|disable|uninstall|retry-rejected
+                                           Manage the Cursor hooks collector (see below)
   codetelemetry-connect import [opts]         Backfill past Claude Code / Codex
                                               sessions from local history files
                                               (see below)
 
 Options:
-  --client claude|codex|pi|kiro
+  --client claude|codex|pi|kiro|cursor
                          Which coding agent to configure (default claude).
                          pi: write the otel block of ~/.pi/agent/settings.json
                          (traces only; pi also needs its exporter extension:
                          \`pi install npm:pi-otel\`).
+                         cursor: install Cursor hooks and a background
+                         collector (see "Cursor" below).
   --codex                Same as --client codex. Target OpenAI Codex: write the [otel] section of
                          ~/.codex/config.toml (or \$CODEX_HOME/config.toml when set)
                          instead of Claude Code's settings.json. (Codex needs the
@@ -215,7 +225,51 @@ import options:
                          otherwise the key comes from the configured client
                          (--source codex: ~/.codex/config.toml first)
   --codex-config <path>  Codex config to read the key from (default: ~/.codex/config.toml)
-  --json                 Emit the full result as JSON`;
+  --json                 Emit the full result as JSON
+
+Cursor (--client cursor):
+  \`login --client cursor\` (or \`<cot_key> --client cursor\`) adds six entries to
+  ~/.cursor/hooks.json (your other hooks are kept), installs a hook program
+  and starts a background collector: a systemd user service on Linux, a
+  LaunchAgent on macOS. Requires Node.js 24 or newer. Verified on Linux. macOS
+  is in preview. Windows is not supported.
+  Run it on the machine where the workspace lives: with Remote-SSH, WSL or a
+  Dev Container, Cursor runs hooks on that host, not on your laptop.
+  By default only metadata is collected: prompt length, tool names, durations,
+  exit codes, models and token counts. A session then shows no repository and
+  no developer. File contents, command output, model replies and reasoning are
+  never collected. Headless runs (cursor-agent -p) report tools and durations,
+  but no prompts and no tokens.
+  --enrich / --no-enrich Also send prompt text, tool commands, file paths and
+                         the workspace path (which gives a session its
+                         repository), or stop sending them. With neither
+                         flag the current choice is kept. Text that looks
+                         like a credential is scrubbed on a best-effort
+                         basis; a secret in an unrecognized shape is sent.
+  --identity / --no-identity
+                         Also send your Cursor account email, or stop sending
+                         it. With neither flag the current choice is kept.
+  --hooks-only           Install no service, for a host without a per-user
+                         service manager; run the printed launcher under your
+                         own supervisor instead.
+  --hooks-manual         Do not edit hooks.json; print the six entries to
+                         paste by hand.
+  --no-proxy-settings    Forget recorded proxy settings. Otherwise HTTPS_PROXY,
+                         NO_PROXY and NODE_EXTRA_CA_CERTS are recorded from
+                         the environment for the collector.
+  cursor status [--json] Collector, hooks and delivery health
+  cursor disable         Stop collecting: remove the hook entries and stop
+                         the service
+  cursor enable [--hooks-only] [--hooks-manual]
+                         Start again with the stored key and capture choices
+  cursor uninstall       Remove the hook entries, hook program, launchers and
+                         service, and list every path left (settings with the
+                         ingest key, unsent records, runtime copy)
+  cursor uninstall --purge
+                         Also delete those paths
+  cursor retry-rejected  Send batches the service refused once more
+  cursor collect [--once]
+                         Run the collector in the foreground`;
 
 function out(line: string): void {
   process.stdout.write(line + "\n");
@@ -309,10 +363,14 @@ function expectedScopeFromFlags(flags: Parsed["flags"]): ExpectedKeyScope | stri
 }
 
 const COMMON_FLAGS = ["json", "help", "h", "api-base", "endpoint", "codex", "client", "scope", "settings"];
+/** Flags only `--client cursor` takes. `proxy-settings` is how the parser
+ *  names `--no-proxy-settings`. */
+const CURSOR_FLAGS = ["identity", "hooks-only", "hooks-manual", "proxy-settings"];
 const ONBOARDING_FLAGS = new Set([
   ...COMMON_FLAGS,
   "enrich", "open", "test", "verify",
   "expect-team", "expect-personal", "expect-tenant", "expect-billing-account",
+  ...CURSOR_FLAGS,
 ]);
 const IMPORT_FLAGS = new Set([
   "json", "help", "h", "api-base", "endpoint", "codex", "settings",
@@ -320,6 +378,28 @@ const IMPORT_FLAGS = new Set([
   "time-limit", "key-env", "codex-config", "client", "identity",
 ]);
 const ESTIMATE_FLAGS = new Set(["json", "help", "h", "source", "since", "api-base"]);
+
+type CursorOptions = { enrich?: boolean; identity?: boolean; hooksOnly: boolean; hooksManual: boolean; clearNetwork: boolean };
+
+/** The Cursor install options. `--enrich` and `--identity` have three states:
+ *  on, off (`--no-...`), or absent to keep the stored choice. A string is the
+ *  reason the flags cannot be used. */
+function cursorOptionsFromFlags(flags: Parsed["flags"]): CursorOptions | string {
+  for (const name of ["enrich", "identity"]) {
+    if (hasFlag(flags, name) && typeof flags[name] !== "boolean") return `--${name} takes no value; use --${name} or --no-${name}.`;
+  }
+  for (const name of ["hooks-only", "hooks-manual"]) {
+    if (hasFlag(flags, name) && flags[name] !== true) return `--${name} takes no value.`;
+  }
+  if (hasFlag(flags, "proxy-settings") && flags["proxy-settings"] !== false) return "Use --no-proxy-settings to forget recorded proxy settings.";
+  return {
+    enrich: flags.enrich as boolean | undefined,
+    identity: flags.identity as boolean | undefined,
+    hooksOnly: flags["hooks-only"] === true,
+    hooksManual: flags["hooks-manual"] === true,
+    clearNetwork: flags["proxy-settings"] === false,
+  };
+}
 
 function unknownFlag(flags: Parsed["flags"], allowed: Set<string>): string | null {
   for (const key of Object.keys(flags)) if (!allowed.has(key)) return key;
@@ -495,6 +575,10 @@ async function runImportCommand(
   if (client === "kiro") {
     out("Kiro V3 uses the bounded background collector. Use kiro collect; history import does not support this source."); return 1;
   }
+  if (client === "cursor") {
+    out("Cursor sessions are collected by its hooks as they happen; history import does not support this source. Use --source claude-code, codex or all.");
+    return 1;
+  }
   if (client === "pi" || str(flags, "source") === "pi") {
     out(PI_REFUSAL);
     return 1;
@@ -617,7 +701,11 @@ async function runImportCommand(
   return result.ok ? 0 : 1;
 }
 
-export async function run(argv: string[]): Promise<number> {
+/** What a caller may replace: the machine the Cursor collector is installed on
+ *  and the fetch its onboarding uses. Tests pass both; the CLI passes neither. */
+export type RunDeps = { cursor?: CursorCommandHost; fetchImpl?: FetchLike };
+
+export async function run(argv: string[], deps: RunDeps = {}): Promise<number> {
   if(argv[0]==="run") {
     const context=loadWorkspace(argv[1]);const binding=findWorkspaceBinding(process.cwd(), context.name);
     if(binding&&!sameWorkspace(binding,context))throw new Error("Selected context conflicts with this repository.");
@@ -636,6 +724,13 @@ export async function run(argv: string[]): Promise<number> {
   if (flags.help || flags.h || cmd === "help") {
     out(HELP);
     return 0;
+  }
+  // The hook reports a recorded Node.js path that is gone; say so on stderr,
+  // where it cannot corrupt a command's output. The two commands that show or
+  // repair it themselves are left alone.
+  if (cmd !== "cursor" && !(flags.client === "cursor" && (cmd === "login" || looksLikeKey(cmd)))) {
+    const notice = cursorNodeNotice(deps.cursor?.home);
+    if (notice) process.stderr.write(`${notice}\n`);
   }
 
   if (cmd === "estimate") return runEstimateCommand(flags);
@@ -678,7 +773,7 @@ export async function run(argv: string[]): Promise<number> {
       out(`Local preview for ${flags.workspace}: ${result.previewSessions.length} sessions. Nothing uploaded.`);
       result.previewSessions.forEach((session, i) => out(`${i + 1}. ${session.source} ${session.sessionId} · ${new Date(session.endMs).toISOString()} · ${session.events} events`));
       if (result.remaining) out(`${result.remaining} additional sessions remain; narrow --since for another preview.`);
-      out(`Import selected numbers: npx -y @codetelemetry/connect@0.4.0 import --workspace ${flags.workspace} --select 1,2 --confirm`);
+      out(`Import selected numbers: npx -y @codetelemetry/connect@${CONNECT_VERSION} import --workspace ${flags.workspace} --select 1,2 --confirm`);
     } else out(`Imported ${result.totals.sessions} sessions; ${result.remaining} remain. ${result.errors.slice(0, 3).join(" ")}`);
     return result.ok ? 0 : 1;
   }
@@ -708,6 +803,7 @@ export async function run(argv: string[]): Promise<number> {
   }
   if (cmd === "kiro") return runKiroCommand(_.slice(1), flags, out);
   if (cmd === "public-sessions") return runPublicSessionsCommand(_.slice(1), flags, out);
+  if (cmd === "cursor") return runCursorCommand(_.slice(1), flags, out, { connectVersion: CONNECT_VERSION, ...deps.cursor });
 
   const picked = pickClient(flags);
   if (!isOnboardClient(picked)) {
@@ -720,21 +816,35 @@ export async function run(argv: string[]): Promise<number> {
     apiBase: typeof flags["api-base"] === "string" ? (flags["api-base"] as string) : undefined,
     ingestEndpoint: typeof flags.endpoint === "string" ? (flags.endpoint as string) : undefined,
   };
-  const common = {
-    client,
-    endpoints,
-    settings: { ...settingsOpts, enrich: !!flags.enrich },
-    sendTest: flags.test !== false,
-    verify: flags.verify !== false,
-    logger: flags.json ? undefined : out,
-  };
-  if (cmd === "login" || cmd === "doctor" || cmd === "print-config" || (typeof cmd === "string" && looksLikeKey(cmd))) {
+  const onboarding = cmd === "login" || cmd === "doctor" || cmd === "print-config" || (typeof cmd === "string" && looksLikeKey(cmd));
+  if (onboarding) {
     const rogue = unknownFlag(flags, ONBOARDING_FLAGS);
     if (rogue) {
       out(`Unknown option --${rogue}; refusing to continue because a misspelled scope fence could target another organization.`);
       return 1;
     }
+    const stray = client === "cursor" ? undefined : CURSOR_FLAGS.find(name => hasFlag(flags, name));
+    if (stray) {
+      out(`--${stray === "proxy-settings" ? "no-proxy-settings" : stray} applies only to --client cursor.`);
+      return 1;
+    }
   }
+  const cursorOptions = client === "cursor" && onboarding ? cursorOptionsFromFlags(flags) : null;
+  if (typeof cursorOptions === "string") {
+    out(cursorOptions);
+    return 1;
+  }
+  const common = {
+    client,
+    endpoints,
+    // Cursor keeps its stored capture choice when neither --enrich nor --no-enrich is given.
+    settings: { ...settingsOpts, enrich: cursorOptions ? cursorOptions.enrich : !!flags.enrich },
+    sendTest: flags.test !== false,
+    verify: flags.verify !== false,
+    logger: flags.json ? undefined : out,
+    ...(cursorOptions ? { cursor: { ...cursorOptions, host: deps.cursor } } : {}),
+    ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+  };
   const expectedScope = expectedScopeFromFlags(flags);
   if (typeof expectedScope === "string") {
     out(expectedScope);
@@ -745,6 +855,7 @@ export async function run(argv: string[]): Promise<number> {
   if (cmd === "print-config") {
     out(CLIENTS[client].printConfig(resolveEndpoints(endpoints).ingestEndpoint, !!flags.enrich));
     if (client === "pi") out(`\n${PI_EXTENSION_HINT}`);
+    if (client === "cursor") out(`\n${CURSOR_SETUP_HINT}`);
     return 0;
   }
 
@@ -850,10 +961,26 @@ export async function run(argv: string[]): Promise<number> {
     return verify.landed ? 0 : 1;
   }
 
+  // Cursor: refuse what this machine cannot support before a key is requested
+  // (login) or used (a pasted key). Nothing has been written at this point.
+  if (cursorOptions && (cmd === "login" || looksLikeKey(cmd))) {
+    try {
+      const plan = cursorPreflight({
+        scope: settingsOpts.scope, configPath: settingsOpts.path, hooksOnly: cursorOptions.hooksOnly, hooksManual: cursorOptions.hooksManual,
+        clearNetwork: cursorOptions.clearNetwork, ingestEndpoint: resolveEndpoints(endpoints).ingestEndpoint, host: deps.cursor,
+      });
+      if (!flags.json) for (const notice of plan.notices) out(notice);
+    } catch (error) {
+      if (!(error instanceof CursorPreflightRefusal)) throw error;
+      out(flags.json ? JSON.stringify({ ok: false, error: "preflight_refused", reason: error.reason, message: error.message }, null, 2) : error.message);
+      return 1;
+    }
+  }
+
   // login: device flow.
   if (cmd === "login") {
     const ep = resolveEndpoints(endpoints);
-    const code = await requestDeviceCode(ep, fetch, undefined, expectedScope);
+    const code = await requestDeviceCode(ep, deps.fetchImpl ?? fetch, undefined, expectedScope);
     // Prefill the code in the URL so the /activate page is one click.
     const expectedTeam = expectedScope.teamId || undefined;
     const activateUrl = `${code.verificationUri}?code=${encodeURIComponent(code.userCode)}` +
@@ -879,6 +1006,7 @@ export async function run(argv: string[]): Promise<number> {
           intervalMs: code.interval * 1000,
           timeoutMs: code.expiresIn * 1000,
           scopeFenced: code.scopeFenced,
+          ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
         });
         return { apiKey: k.apiKey, ingestEndpoint: k.ingestEndpoint, scope: k.scope };
       },

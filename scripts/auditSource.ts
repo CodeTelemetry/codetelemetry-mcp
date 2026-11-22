@@ -22,6 +22,11 @@ export function auditSource(root: string): string[] {
     if (file.startsWith("src/client/kiro/") && /provider_turn_usage|turn_completion|usage[.]amount|turn[.]status|turn[.]stop_reason/.test(content)) {
       problems.push(`${file}: product interpretation belongs to private ingestion`);
     }
+    // The Cursor collector ships source records. Naming a canonical event, a
+    // token total or an outcome here would be interpreting them on the client.
+    if (file.startsWith("src/client/cursor/") && /user_prompt|api_request|tool_result|cache_creation_tokens|usage_scope|cursor[.]outcome/.test(content)) {
+      problems.push(`${file}: product interpretation belongs to private ingestion`);
+    }
     const source = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true);
     const check = (specifier: string) => {
       if (specifier.startsWith("node:") || specifier.startsWith("@modelcontextprotocol/sdk/")) return;

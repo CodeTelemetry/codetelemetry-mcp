@@ -146,7 +146,16 @@ const CLIENT_PROP = {
   type: "string",
   enum: [...ONBOARD_CLIENTS],
   description:
-    "Which coding client to configure: claude → settings.json env block (default); codex → the [otel] section of ~/.codex/config.toml (Codex needs the literal key in the file — it does not expand ${VAR} placeholders); pi → the otel block of ~/.pi/agent/settings.json (pi also needs its exporter extension: `pi install npm:pi-otel`); kiro → a bounded local V3 transcript collector in a separate CodeTelemetry config (Node 24 required; Linux/macOS owned user service, Windows foreground).",
+    "Which coding client to configure: claude → settings.json env block (default); codex → the [otel] section of ~/.codex/config.toml (Codex needs the literal key in the file — it does not expand ${VAR} placeholders); pi → the otel block of ~/.pi/agent/settings.json (pi also needs its exporter extension: `pi install npm:pi-otel`); kiro → a bounded local V3 transcript collector in a separate CodeTelemetry config (Node 24 required; Linux/macOS owned user service, Windows foreground); cursor is not configured by these tools: it needs hooks and a background collector, which the user installs by running `npx -y @codetelemetry/connect login --client cursor` on the machine where the workspace lives (status can read its settings).",
+};
+
+/** Cursor is installed by the Connect command, never by a tool call: the
+ *  install adds hooks to the user's editor and starts a background service. */
+const CURSOR_USE_CONNECT = {
+  ok: false as const,
+  error: "use_connect_cli",
+  message:
+    "This tool does not set up Cursor. Ask the user to run `npx -y @codetelemetry/connect login --client cursor` in a terminal on the machine where the Cursor workspace lives (with Remote-SSH, WSL or a Dev Container that is the remote host, not the laptop). The command opens a browser to approve, adds six hook entries to ~/.cursor/hooks.json, keeping the user's other hooks, and starts a background collector. It collects metadata only unless the user adds --enrich (prompt text, tool commands, file paths, workspace path) or --identity (their Cursor account email). Requires Node.js 24 or newer on Linux or macOS. Afterwards, status with client \"cursor\" shows whether its settings are in place.",
 };
 
 const pickClient = (args: Record<string, unknown>): OnboardClient => (isOnboardClient(args.client) ? args.client : "claude");
@@ -177,6 +186,7 @@ const CLAUDE_CONFIG_FILES: ReadonlySet<string> = new Set(["settings.json", "sett
 const CODEX_CONFIG_FILES: ReadonlySet<string> = new Set(["config.toml"]);
 const PI_CONFIG_FILES: ReadonlySet<string> = new Set(["settings.json"]);
 const KIRO_CONFIG_FILES: ReadonlySet<string> = new Set(["kiro-v3.json"]);
+const CURSOR_CONFIG_FILES: ReadonlySet<string> = new Set(["cursor-hooks-v1.json"]);
 const MAX_CONFIG_PATH = 1024;
 const MAX_CONFIG_BYTES = 1024 * 1024;
 
@@ -185,7 +195,7 @@ const PATH_PROP = {
   minLength: 1,
   maxLength: MAX_CONFIG_PATH,
   description:
-    "Explicit config file, overriding scope and the client's default: a settings.json or settings.local.json inside a .claude directory (or $CLAUDE_CONFIG_DIR), with client \"codex\" a config.toml inside a .codex directory (or $CODEX_HOME), or with client \"pi\" a settings.json inside a .pi or .pi/agent directory, or with client \"kiro\" a kiro-v3.json inside .config/codetelemetry. A leading ~ is the home directory. Links, network paths and anything but a regular file are refused.",
+    "Explicit config file, overriding scope and the client's default: a settings.json or settings.local.json inside a .claude directory (or $CLAUDE_CONFIG_DIR), with client \"codex\" a config.toml inside a .codex directory (or $CODEX_HOME), or with client \"pi\" a settings.json inside a .pi or .pi/agent directory, or with client \"kiro\" a kiro-v3.json inside .config/codetelemetry, or with client \"cursor\" a cursor-hooks-v1.json inside .config/codetelemetry. A leading ~ is the home directory. Links, network paths and anything but a regular file are refused.",
 };
 
 type RequestedPath = { ok: true; path: string | undefined } | { ok: false; message: string };
@@ -211,15 +221,18 @@ export function requestedConfigPath(
   const codex = client === "codex";
   const pi = client === "pi";
   const kiro = client === "kiro";
-  const configDir = codex ? process.env.CODEX_HOME : pi || kiro ? undefined : process.env.CLAUDE_CONFIG_DIR;
+  const cursor = client === "cursor";
+  const configDir = codex ? process.env.CODEX_HOME : pi || kiro || cursor ? undefined : process.env.CLAUDE_CONFIG_DIR;
   // pi reads ~/.pi/agent/settings.json and <project>/.pi/settings.json.
-  const inClientDir = kiro ? pathImpl.basename(dir)==="codetelemetry" && pathImpl.basename(pathImpl.dirname(dir))===".config" : pi
+  // Kiro and Cursor collector settings live in CodeTelemetry's own directory.
+  const inClientDir = kiro || cursor ? pathImpl.basename(dir)==="codetelemetry" && pathImpl.basename(pathImpl.dirname(dir))===".config" : pi
     ? pathImpl.basename(dir) === ".pi" || (pathImpl.basename(dir) === "agent" && pathImpl.basename(pathImpl.dirname(dir)) === ".pi")
     : pathImpl.basename(dir) === (codex ? ".codex" : ".claude") || (!!configDir && pathImpl.resolve(configDir) === dir);
-  if (!(codex ? CODEX_CONFIG_FILES : pi ? PI_CONFIG_FILES : kiro ? KIRO_CONFIG_FILES : CLAUDE_CONFIG_FILES).has(pathImpl.basename(resolved)) || !inClientDir) {
+  if (!(codex ? CODEX_CONFIG_FILES : pi ? PI_CONFIG_FILES : kiro ? KIRO_CONFIG_FILES : cursor ? CURSOR_CONFIG_FILES : CLAUDE_CONFIG_FILES).has(pathImpl.basename(resolved)) || !inClientDir) {
     return {
       ok: false,
-      message: kiro ? "path must name kiro-v3.json inside a .config/codetelemetry directory, outside Kiro configuration." : codex
+      message: kiro ? "path must name kiro-v3.json inside a .config/codetelemetry directory, outside Kiro configuration."
+        : cursor ? "path must name cursor-hooks-v1.json inside a .config/codetelemetry directory, outside Cursor configuration." : codex
         ? "path must name a config.toml inside a .codex directory (or $CODEX_HOME)."
         : pi
           ? "path must name a settings.json inside a .pi or .pi/agent directory."
@@ -911,7 +924,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "write_local_config",
     title: "Write local OTEL config (Claude Code, Codex or pi)",
-    description: "Write the OpenTelemetry exporter config (and the ingest key) into a local client config — Claude Code's user or current-project settings.json, Codex's active ~/.codex/config.toml (`client: \"codex\"`), pi's ~/.pi/agent/settings.json otel block (`client: \"pi\"`; pi also needs `pi install npm:pi-otel`), or an explicit `path` to another settings.json, settings.local.json or config.toml. Preserves existing settings and backs up the file first. Content telemetry and repository-path observation are separate, explicit opt-ins. Returns the path and the KEYS written (never values).",
+    description: "Write the OpenTelemetry exporter config (and the ingest key) into a local client config — Claude Code's user or current-project settings.json, Codex's active ~/.codex/config.toml (`client: \"codex\"`), pi's ~/.pi/agent/settings.json otel block (`client: \"pi\"`; pi also needs `pi install npm:pi-otel`), or an explicit `path` to another settings.json, settings.local.json or config.toml. Preserves existing settings and backs up the file first. Content telemetry and repository-path observation are separate, explicit opt-ins. Returns the path and the KEYS written (never values). Cursor is not set up here: `client: \"cursor\"` returns the command the user runs instead.",
     inputSchema: obj({
       client: CLIENT_PROP,
       scope: { type: "string", enum: ["user", "project"], description: "Claude only: user → ~/.claude/settings.json (default); project → ./.claude/settings.json." },
@@ -922,8 +935,9 @@ export const TOOLS: ToolDef[] = [
     async handler(args, ctx) {
       const invalidOptIn = invalidBooleanOptIn(args);
       if (invalidOptIn) return { ok: false, error: "bad_input", message: `${invalidOptIn} must be a boolean.` };
-      if (!ctx.session.hasKey()) return NO_KEY;
       const client = pickClient(args);
+      if (client === "cursor") return CURSOR_USE_CONNECT;
+      if (!ctx.session.hasKey()) return NO_KEY;
       const requested = requestedConfigPath(client, args);
       if (!requested.ok) return { ok: false, error: "bad_input", message: requested.message };
       const r = CLIENTS[client].write({
@@ -973,7 +987,7 @@ export const TOOLS: ToolDef[] = [
   {
     name: "onboard",
     title: "Onboard (one shot)",
-    description: "Do the whole onboarding in one call: use the session key (or a `key` you pass), write a local client config (the recognized default, or an explicit settings.json, settings.local.json or config.toml `path`), send a test event, and confirm it landed. Content telemetry and repository-path observation are separate, explicit opt-ins. Returns a step-by-step checklist. Run authenticate + auth_status first if you don't already have a key.",
+    description: "Do the whole onboarding in one call: use the session key (or a `key` you pass), write a local client config (the recognized default, or an explicit settings.json, settings.local.json or config.toml `path`), send a test event, and confirm it landed. Content telemetry and repository-path observation are separate, explicit opt-ins. Returns a step-by-step checklist. Run authenticate + auth_status first if you don't already have a key. Cursor is not set up here: `client: \"cursor\"` returns the command the user runs instead.",
     inputSchema: obj({
       key: { type: "string", description: "A cot_… ingest key (optional if already authenticated)." },
       client: CLIENT_PROP,
@@ -987,6 +1001,8 @@ export const TOOLS: ToolDef[] = [
       const invalidOptIn = invalidBooleanOptIn(args);
       if (invalidOptIn) return { ok: false, error: "bad_input", message: `${invalidOptIn} must be a boolean.` };
       const client = pickClient(args);
+      // Installing hooks and a background service is the user's own command to run.
+      if (client === "cursor") return CURSOR_USE_CONNECT;
       const requested = requestedConfigPath(client, args);
       if (!requested.ok) return { ok: false, error: "bad_input", message: requested.message };
       if (typeof args.key === "string" && args.key) {
@@ -1665,7 +1681,7 @@ export const TOOLS: ToolDef[] = [
       title: { type: "string", maxLength: 300, description: "Optional plan title, used as the leading line of the sized text." },
       repo: { type: "string", maxLength: 200, description: "Repo the work will land in, when known. Selects that repo's calibrated ladder if one exists." },
       project: { type: "string", maxLength: 200, description: "Optional project/product grouping. Recorded as context; does not change the estimate." },
-      provider: { type: "string", enum: [...PLAN_PROVIDERS], description: "Which coding assistant produced the plan (claude, codex, pi or kiro). Recorded as context; does not change the estimate." },
+      provider: { type: "string", enum: [...PLAN_PROVIDERS], description: "Which coding assistant produced the plan (claude, codex, pi, kiro or cursor). Recorded as context; does not change the estimate." },
       model: { type: "string", maxLength: 120, description: "Model id the caller knows produced the plan. Recorded as context; does not change the estimate." },
       lookbackDays: { type: "integer", minimum: 1, maximum: 365, description: "History window to size against (default 90 days)." },
       limit: { type: "integer", minimum: 1, maximum: 5000, description: "Maximum historical sessions to load (default 1000)." },

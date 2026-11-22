@@ -7,6 +7,7 @@
 
 import fs from "node:fs";
 import {resolveKiroConfigPath, writeKiroConfig, readKiroKey, readKiroSummary} from "./kiro/config.ts";
+import { CURSOR_CONFIG_KIND, readCursorKey, readCursorSummary, resolveCursorConfigPath, writeCursorConfig } from "./cursor/config.ts";
 import { resolveSettingsPath, type SettingsScope } from "./config.ts";
 import { buildEnvBlock, readSettingsSummary, writeSettings, type WriteResult } from "./settings.ts";
 import { buildOtelSection, readCodexKey, readCodexSummary, resolveCodexConfigPath, writeCodexConfig } from "./codexConfig.ts";
@@ -36,6 +37,11 @@ export type ClientDescriptor = {
   printConfig(ingestEndpoint: string, enrich: boolean): string;
 };
 
+/** How Cursor is set up. Its settings file alone collects nothing: the hooks
+ *  and the background collector come from the Connect command. */
+export const CURSOR_SETUP_HINT = "Cursor is set up by running `npx -y @codetelemetry/connect login --client cursor` on the machine where the workspace lives. " +
+  "It installs six hooks and a background collector; the settings file alone collects nothing.";
+
 /** Claude Code's configured key: the bearer token in its OTLP headers env. */
 export function readClaudeKey(settingsPath: string): string | null {
   if (!fs.existsSync(settingsPath)) return null;
@@ -54,6 +60,24 @@ export const CLIENTS: Readonly<Record<OnboardClient, ClientDescriptor>> = Object
     resolveConfigPath:opts=>resolveKiroConfigPath({path:opts.path}),write:writeKiroConfig,readKey:readKiroKey,readSummary:readKiroSummary,
     printConfig:(ingestEndpoint,enrich)=>JSON.stringify({kind:"codetelemetry-kiro-v3",version:1,enabled:true,key:"cot_<YOUR_INGEST_KEY>",ingestEndpoint,
       sourceRoot:"<HOME>/.kiro/sessions",stateDir:"<HOME>/.local/state/codetelemetry/kiro-v3",backfill:false,content:{prompts:enrich,toolDetails:enrich}},null,2),
+  },
+  cursor: {
+    id: "cursor",
+    label: "Cursor",
+    noun: "collector settings",
+    cliFlag: " --client cursor",
+    resolveConfigPath: (opts) => resolveCursorConfigPath({ path: opts.path }),
+    // Settings only. Onboarding installs the hooks and the collector around this.
+    write: (opts) => writeCursorConfig({
+      key: opts.key, ingestEndpoint: opts.ingestEndpoint, configPath: opts.configPath, enrich: opts.enrich, backup: opts.backup,
+    }),
+    readKey: readCursorKey,
+    readSummary: readCursorSummary,
+    printConfig: (ingestEndpoint, enrich) => JSON.stringify({
+      kind: CURSOR_CONFIG_KIND, version: 1, enabled: true, key: "cot_<YOUR_INGEST_KEY>", ingestEndpoint,
+      stateDir: "<HOME>/.local/state/codetelemetry/cursor-hooks-v1", content: { prompts: enrich, toolDetails: enrich },
+      identity: { email: false }, network: {}, node: { execPath: "<NODE>" }, hooksFile: "<HOME>/.cursor/hooks.json", createdByConnect: false,
+    }, null, 2),
   },
   claude: {
     id: "claude",

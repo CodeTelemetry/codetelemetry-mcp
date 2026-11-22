@@ -16,6 +16,17 @@ test("public runtime fails closed on new files, external imports and symlinks", 
   fs.appendFileSync(kiro, '\nconst forbiddenMapping = "provider_turn_usage";\n');
   assert.ok(auditSource(root).some(problem => problem.includes("product interpretation belongs to private ingestion")));
   fs.writeFileSync(kiro, original);
+  // The Cursor collector ships source records and never names what they become.
+  const cursor = path.join(root, "src/client/cursor/records.ts");
+  const cursorOriginal = fs.readFileSync(cursor, "utf8");
+  for (const interpreted of ["user_prompt", "api_request", "tool_result", "cache_creation_tokens", "usage_scope", "cursor.outcome"]) {
+    fs.appendFileSync(cursor, `\nconst forbiddenMapping = "${interpreted}";\n`);
+    assert.ok(auditSource(root).some(problem => problem === "src/client/cursor/records.ts: product interpretation belongs to private ingestion"), interpreted);
+    fs.writeFileSync(cursor, cursorOriginal);
+  }
+  fs.appendFileSync(kiro, '\nconst allowedOutsideCursor = "tool_result";\n');
+  assert.deepEqual(auditSource(root), [], "the Cursor rule applies to the Cursor collector only");
+  fs.writeFileSync(kiro, original);
   fs.writeFileSync(path.join(root, "src/accidentalBackend.ts"), "export {};\n");
   assert.ok(auditSource(root).some(problem => problem.includes("accidentalBackend.ts")));
   fs.rmSync(path.join(root, "src/accidentalBackend.ts"));

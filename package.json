@@ -146,6 +146,50 @@
       "types": "./dist/src/client/import/sources/files.d.ts",
       "default": "./dist/src/client/import/sources/files.js"
     },
+    "./client/collector/scrub": {
+      "types": "./dist/src/client/collector/scrub.d.ts",
+      "default": "./dist/src/client/collector/scrub.js"
+    },
+    "./client/collector/service": {
+      "types": "./dist/src/client/collector/service.d.ts",
+      "default": "./dist/src/client/collector/service.js"
+    },
+    "./client/collector/state": {
+      "types": "./dist/src/client/collector/state.d.ts",
+      "default": "./dist/src/client/collector/state.js"
+    },
+    "./client/collector/transport": {
+      "types": "./dist/src/client/collector/transport.d.ts",
+      "default": "./dist/src/client/collector/transport.js"
+    },
+    "./client/cursor/collector": {
+      "types": "./dist/src/client/cursor/collector.d.ts",
+      "default": "./dist/src/client/cursor/collector.js"
+    },
+    "./client/cursor/command": {
+      "types": "./dist/src/client/cursor/command.d.ts",
+      "default": "./dist/src/client/cursor/command.js"
+    },
+    "./client/cursor/config": {
+      "types": "./dist/src/client/cursor/config.d.ts",
+      "default": "./dist/src/client/cursor/config.js"
+    },
+    "./client/cursor/hookProgram": {
+      "types": "./dist/src/client/cursor/hookProgram.d.ts",
+      "default": "./dist/src/client/cursor/hookProgram.js"
+    },
+    "./client/cursor/hooksFile": {
+      "types": "./dist/src/client/cursor/hooksFile.d.ts",
+      "default": "./dist/src/client/cursor/hooksFile.js"
+    },
+    "./client/cursor/preflight": {
+      "types": "./dist/src/client/cursor/preflight.d.ts",
+      "default": "./dist/src/client/cursor/preflight.js"
+    },
+    "./client/cursor/records": {
+      "types": "./dist/src/client/cursor/records.d.ts",
+      "default": "./dist/src/client/cursor/records.js"
+    },
     "./client/kiro/collector": {
       "types": "./dist/src/client/kiro/collector.d.ts",
       "default": "./dist/src/client/kiro/collector.js"

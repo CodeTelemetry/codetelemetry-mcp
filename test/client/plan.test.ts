@@ -93,7 +93,7 @@ test("rejects malformed steps and out-of-range fields", () => {
     { planText: "x".repeat(MAX_PLAN_TEXT + 1) },
     { planText: "ok", title: "t".repeat(301) },
     { planText: "ok", repo: 7 },
-    { planText: "ok", provider: "cursor" },
+    { planText: "ok", provider: "emacs" },
     { planText: "ok", model: "m".repeat(200) },
   ];
   for (const raw of cases) {

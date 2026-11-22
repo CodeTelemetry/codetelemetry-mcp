@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "note": "synthetic fixture: a user's own hooks",
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "/opt/fixture/bin/greet.sh"
+      }
+    ],
+    "beforeSubmitPrompt": [
+      { "command": "/opt/fixture/bin/redact-check.sh", "timeout": 10, "failClosed": true },
+      {
+        "command": "node /opt/fixture/audit.js --mode=prompt",
+        "matcher": "*.md"
+      }
+    ],
+    "stop": [
+      {
+        "command": "/opt/fixture/bin/notify.sh",
+        "timeout": 2.50
+      }
+    ]
+  },
+  "extensions": { "owner": "fixture-team", "ratio": 1.0, "tags": ["a", "b"] }
+}

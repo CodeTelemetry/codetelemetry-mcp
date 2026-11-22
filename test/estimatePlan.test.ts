@@ -156,7 +156,7 @@ test("estimate_plan sizes text and structured steps and never leaks the key", as
       { steps: "not an array" },
       { steps: [{}] },
       { steps: [{ title: "", detail: "" }] },
-      { planText: "x", provider: "cursor" },
+      { planText: "x", provider: "emacs" },
       { planText: "x", repo: 7 },
       { planText: "x", lookbackDays: 0 },
       { planText: "x", limit: 99_999 },

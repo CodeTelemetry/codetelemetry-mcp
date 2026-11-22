@@ -1,7 +1,7 @@
 {
   "serverName": "codetelemetry",
   "serverVersion": "0.8.0",
-  "registryHash": "e2ca477a138f8ea65bf41be27666cdd1c4a38fde542f664622f698abc157006d",
+  "registryHash": "2e2caf5c317ec1daed8770b0c64bb3edd11df08569339a4b2dec9c704acb4bda",
   "toolCount": 41,
   "tools": [
     {
@@ -346,7 +346,7 @@
     {
       "name": "write_local_config",
       "title": "Write local OTEL config (Claude Code, Codex or pi)",
-      "description": "Write the OpenTelemetry exporter config (and the ingest key) into a local client config — Claude Code's user or current-project settings.json, Codex's active ~/.codex/config.toml (`client: \"codex\"`), pi's ~/.pi/agent/settings.json otel block (`client: \"pi\"`; pi also needs `pi install npm:pi-otel`), or an explicit `path` to another settings.json, settings.local.json or config.toml. Preserves existing settings and backs up the file first. Content telemetry and repository-path observation are separate, explicit opt-ins. Returns the path and the KEYS written (never values).",
+      "description": "Write the OpenTelemetry exporter config (and the ingest key) into a local client config — Claude Code's user or current-project settings.json, Codex's active ~/.codex/config.toml (`client: \"codex\"`), pi's ~/.pi/agent/settings.json otel block (`client: \"pi\"`; pi also needs `pi install npm:pi-otel`), or an explicit `path` to another settings.json, settings.local.json or config.toml. Preserves existing settings and backs up the file first. Content telemetry and repository-path observation are separate, explicit opt-ins. Returns the path and the KEYS written (never values). Cursor is not set up here: `client: \"cursor\"` returns the command the user runs instead.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -356,9 +356,10 @@
               "claude",
               "codex",
               "pi",
-              "kiro"
+              "kiro",
+              "cursor"
             ],
-            "description": "Which coding client to configure: claude → settings.json env block (default); codex → the [otel] section of ~/.codex/config.toml (Codex needs the literal key in the file — it does not expand ${VAR} placeholders); pi → the otel block of ~/.pi/agent/settings.json (pi also needs its exporter extension: `pi install npm:pi-otel`); kiro → a bounded local V3 transcript collector in a separate CodeTelemetry config (Node 24 required; Linux/macOS owned user service, Windows foreground)."
+            "description": "Which coding client to configure: claude → settings.json env block (default); codex → the [otel] section of ~/.codex/config.toml (Codex needs the literal key in the file — it does not expand ${VAR} placeholders); pi → the otel block of ~/.pi/agent/settings.json (pi also needs its exporter extension: `pi install npm:pi-otel`); kiro → a bounded local V3 transcript collector in a separate CodeTelemetry config (Node 24 required; Linux/macOS owned user service, Windows foreground); cursor is not configured by these tools: it needs hooks and a background collector, which the user installs by running `npx -y @codetelemetry/connect login --client cursor` on the machine where the workspace lives (status can read its settings)."
           },
           "scope": {
             "type": "string",
@@ -372,7 +373,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 1024,
-            "description": "Explicit config file, overriding scope and the client's default: a settings.json or settings.local.json inside a .claude directory (or $CLAUDE_CONFIG_DIR), with client \"codex\" a config.toml inside a .codex directory (or $CODEX_HOME), or with client \"pi\" a settings.json inside a .pi or .pi/agent directory, or with client \"kiro\" a kiro-v3.json inside .config/codetelemetry. A leading ~ is the home directory. Links, network paths and anything but a regular file are refused."
+            "description": "Explicit config file, overriding scope and the client's default: a settings.json or settings.local.json inside a .claude directory (or $CLAUDE_CONFIG_DIR), with client \"codex\" a config.toml inside a .codex directory (or $CODEX_HOME), or with client \"pi\" a settings.json inside a .pi or .pi/agent directory, or with client \"kiro\" a kiro-v3.json inside .config/codetelemetry, or with client \"cursor\" a cursor-hooks-v1.json inside .config/codetelemetry. A leading ~ is the home directory. Links, network paths and anything but a regular file are refused."
           },
           "enrich": {
             "type": "boolean",
@@ -414,7 +415,7 @@
     {
       "name": "onboard",
       "title": "Onboard (one shot)",
-      "description": "Do the whole onboarding in one call: use the session key (or a `key` you pass), write a local client config (the recognized default, or an explicit settings.json, settings.local.json or config.toml `path`), send a test event, and confirm it landed. Content telemetry and repository-path observation are separate, explicit opt-ins. Returns a step-by-step checklist. Run authenticate + auth_status first if you don't already have a key.",
+      "description": "Do the whole onboarding in one call: use the session key (or a `key` you pass), write a local client config (the recognized default, or an explicit settings.json, settings.local.json or config.toml `path`), send a test event, and confirm it landed. Content telemetry and repository-path observation are separate, explicit opt-ins. Returns a step-by-step checklist. Run authenticate + auth_status first if you don't already have a key. Cursor is not set up here: `client: \"cursor\"` returns the command the user runs instead.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -428,9 +429,10 @@
               "claude",
               "codex",
               "pi",
-              "kiro"
+              "kiro",
+              "cursor"
             ],
-            "description": "Which coding client to configure: claude → settings.json env block (default); codex → the [otel] section of ~/.codex/config.toml (Codex needs the literal key in the file — it does not expand ${VAR} placeholders); pi → the otel block of ~/.pi/agent/settings.json (pi also needs its exporter extension: `pi install npm:pi-otel`); kiro → a bounded local V3 transcript collector in a separate CodeTelemetry config (Node 24 required; Linux/macOS owned user service, Windows foreground)."
+            "description": "Which coding client to configure: claude → settings.json env block (default); codex → the [otel] section of ~/.codex/config.toml (Codex needs the literal key in the file — it does not expand ${VAR} placeholders); pi → the otel block of ~/.pi/agent/settings.json (pi also needs its exporter extension: `pi install npm:pi-otel`); kiro → a bounded local V3 transcript collector in a separate CodeTelemetry config (Node 24 required; Linux/macOS owned user service, Windows foreground); cursor is not configured by these tools: it needs hooks and a background collector, which the user installs by running `npx -y @codetelemetry/connect login --client cursor` on the machine where the workspace lives (status can read its settings)."
           },
           "scope": {
             "type": "string",
@@ -444,7 +446,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 1024,
-            "description": "Explicit config file, overriding scope and the client's default: a settings.json or settings.local.json inside a .claude directory (or $CLAUDE_CONFIG_DIR), with client \"codex\" a config.toml inside a .codex directory (or $CODEX_HOME), or with client \"pi\" a settings.json inside a .pi or .pi/agent directory, or with client \"kiro\" a kiro-v3.json inside .config/codetelemetry. A leading ~ is the home directory. Links, network paths and anything but a regular file are refused."
+            "description": "Explicit config file, overriding scope and the client's default: a settings.json or settings.local.json inside a .claude directory (or $CLAUDE_CONFIG_DIR), with client \"codex\" a config.toml inside a .codex directory (or $CODEX_HOME), or with client \"pi\" a settings.json inside a .pi or .pi/agent directory, or with client \"kiro\" a kiro-v3.json inside .config/codetelemetry, or with client \"cursor\" a cursor-hooks-v1.json inside .config/codetelemetry. A leading ~ is the home directory. Links, network paths and anything but a regular file are refused."
           },
           "enrich": {
             "type": "boolean",
@@ -475,9 +477,10 @@
               "claude",
               "codex",
               "pi",
-              "kiro"
+              "kiro",
+              "cursor"
             ],
-            "description": "Which coding client to configure: claude → settings.json env block (default); codex → the [otel] section of ~/.codex/config.toml (Codex needs the literal key in the file — it does not expand ${VAR} placeholders); pi → the otel block of ~/.pi/agent/settings.json (pi also needs its exporter extension: `pi install npm:pi-otel`); kiro → a bounded local V3 transcript collector in a separate CodeTelemetry config (Node 24 required; Linux/macOS owned user service, Windows foreground)."
+            "description": "Which coding client to configure: claude → settings.json env block (default); codex → the [otel] section of ~/.codex/config.toml (Codex needs the literal key in the file — it does not expand ${VAR} placeholders); pi → the otel block of ~/.pi/agent/settings.json (pi also needs its exporter extension: `pi install npm:pi-otel`); kiro → a bounded local V3 transcript collector in a separate CodeTelemetry config (Node 24 required; Linux/macOS owned user service, Windows foreground); cursor is not configured by these tools: it needs hooks and a background collector, which the user installs by running `npx -y @codetelemetry/connect login --client cursor` on the machine where the workspace lives (status can read its settings)."
           },
           "scope": {
             "type": "string",
@@ -491,7 +494,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 1024,
-            "description": "Explicit config file, overriding scope and the client's default: a settings.json or settings.local.json inside a .claude directory (or $CLAUDE_CONFIG_DIR), with client \"codex\" a config.toml inside a .codex directory (or $CODEX_HOME), or with client \"pi\" a settings.json inside a .pi or .pi/agent directory, or with client \"kiro\" a kiro-v3.json inside .config/codetelemetry. A leading ~ is the home directory. Links, network paths and anything but a regular file are refused."
+            "description": "Explicit config file, overriding scope and the client's default: a settings.json or settings.local.json inside a .claude directory (or $CLAUDE_CONFIG_DIR), with client \"codex\" a config.toml inside a .codex directory (or $CODEX_HOME), or with client \"pi\" a settings.json inside a .pi or .pi/agent directory, or with client \"kiro\" a kiro-v3.json inside .config/codetelemetry, or with client \"cursor\" a cursor-hooks-v1.json inside .config/codetelemetry. A leading ~ is the home directory. Links, network paths and anything but a regular file are refused."
           }
         },
         "additionalProperties": false
@@ -535,7 +538,8 @@
               "all",
               "claude",
               "codex",
-              "kiro"
+              "kiro",
+              "cursor"
             ],
             "description": "Assistant filter (default all)."
           },
@@ -1314,9 +1318,10 @@
               "claude",
               "codex",
               "pi",
-              "kiro"
+              "kiro",
+              "cursor"
             ],
-            "description": "Which coding assistant produced the plan (claude, codex, pi or kiro). Recorded as context; does not change the estimate."
+            "description": "Which coding assistant produced the plan (claude, codex, pi, kiro or cursor). Recorded as context; does not change the estimate."
           },
           "model": {
             "type": "string",

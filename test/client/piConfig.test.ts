@@ -95,12 +95,13 @@ test("readPiKey / readPiSummary report state without the key", () => {
 });
 
 test("the client descriptors resolve pi, and the client list is the registry's twin", () => {
-  assert.deepEqual([...ONBOARD_CLIENTS], ["claude", "codex", "pi", "kiro"]);
+  assert.deepEqual([...ONBOARD_CLIENTS], ["claude", "codex", "pi", "kiro", "cursor"]);
   assert.deepEqual([...PLAN_PROVIDERS], [...ONBOARD_CLIENTS]);
   assert.equal(resolveClient(undefined).id, "claude");
   assert.equal(resolveClient("pi").id, "pi");
   assert.ok(isOnboardClient("pi"));
-  assert.throws(() => resolveClient("cursor"), /unknown client/);
+  assert.equal(resolveClient("cursor").id, "cursor");
+  assert.throws(() => resolveClient("emacs"), /unknown client "emacs" \(expected one of: claude, codex, pi, kiro, cursor\)/);
   assert.ok(CLIENTS.pi.resolveConfigPath({}).endsWith(path.join(".pi", "agent", "settings.json")));
   assert.equal(resolvePiConfigPath({ path: "/x/y.json" }), path.resolve("/x/y.json"));
   assert.match(CLIENTS.pi.printConfig(ENDPOINT, false), /"endpoint": "https:\/\/ingest\.example\.com:443\/v1\/traces"/);
@@ -123,7 +124,7 @@ test("the CLI: --client pi prints pi's block, --client is validated, --codex sta
   const output = lines.join("");
   assert.match(output, /"serviceName": "pi"/);
   assert.match(output, /pi install npm:pi-otel/);
-  assert.match(output, /--client must be one of claude, codex, pi, kiro\./);
+  assert.match(output, /--client must be one of claude, codex, pi, kiro, cursor\./);
   assert.match(output, /--codex conflicts with --client pi\./);
   assert.match(output, /\[otel\]/);
 });
