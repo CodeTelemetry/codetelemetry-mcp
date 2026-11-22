@@ -38,6 +38,8 @@ export const PUBLIC_MODULES = [
   "src/client/import/browser",
   "src/client/import/convert",
   "src/client/import/core",
+  "src/client/import/estimate",
+  "src/client/import/identity",
   "src/client/import/ledger",
   "src/client/import/model",
   "src/client/import/options",

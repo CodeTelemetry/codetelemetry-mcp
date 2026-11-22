@@ -31,8 +31,38 @@ export type SessionCandidate = {
   fileSig: string;
 };
 
-export function defaultClaudeProjectsDir(home?: string): string {
-  return path.join(home ?? os.homedir(), ".claude", "projects");
+/** Claude Code's config directory: $CLAUDE_CONFIG_DIR, else ~/.claude. */
+export function claudeConfigDir(home?: string, env: NodeJS.ProcessEnv = process.env): string {
+  if (!home && env.CLAUDE_CONFIG_DIR) return env.CLAUDE_CONFIG_DIR;
+  return path.join(home ?? os.homedir(), ".claude");
+}
+
+export function defaultClaudeProjectsDir(home?: string, env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(claudeConfigDir(home, env), "projects");
+}
+
+/** The user-level Claude Code settings.json (where cleanupPeriodDays lives). */
+export function defaultClaudeSettingsPath(env: NodeJS.ProcessEnv = process.env, home?: string): string {
+  return path.join(claudeConfigDir(home, env), "settings.json");
+}
+
+/** Claude Code's default transcript retention, in days after last activity. */
+export const CLAUDE_CLEANUP_DEFAULT_DAYS = 30;
+
+/**
+ * How long Claude Code keeps a transcript after its last activity before it
+ * deletes it at startup: settings.json `cleanupPeriodDays`, default 30. Codex
+ * keeps rollouts until they are removed, so only Claude history ages out.
+ */
+export function readClaudeCleanupPeriodDays(settingsPath: string = defaultClaudeSettingsPath()): number {
+  try {
+    const st = fs.statSync(settingsPath);
+    if (!st.isFile() || st.size > 1024 * 1024) return CLAUDE_CLEANUP_DEFAULT_DAYS;
+    const v = JSON.parse(fs.readFileSync(settingsPath, "utf8"))?.cleanupPeriodDays;
+    return typeof v === "number" && Number.isInteger(v) && v >= 1 ? v : CLAUDE_CLEANUP_DEFAULT_DAYS;
+  } catch {
+    return CLAUDE_CLEANUP_DEFAULT_DAYS;
+  }
 }
 
 export function defaultCodexSessionsDir(home?: string, env: NodeJS.ProcessEnv = process.env): string {

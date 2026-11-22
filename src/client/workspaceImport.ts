@@ -7,6 +7,7 @@ import { resolveEndpoints } from "./config.ts";
 import { runImport, type ImportRunOptions } from "./import/run.ts";
 import type { ImportRunResult } from "./import/core.ts";
 import { sessionKeyOf } from "./import/model.ts";
+import { resolveImportIdentity } from "./import/identity.ts";
 
 type Preview = {
   version: 1; workspace: string; keyHash: string; project: string; createdAt: number;
@@ -24,11 +25,14 @@ export async function importWorkspaceHistory(options: {
   const expected = context.scope;
   const previewFile = path.join(workspaceHome(), `${context.name}.import-preview.json`);
   const source = context.clientConfig.client === "claude" ? "claude-code" : "codex";
+  // The same identity live exporters stamp; resolved identically for the
+  // preview and the confirmed import, so the previewed plans still match.
+  const identity = resolveImportIdentity({ source });
   if (options.preview) {
     if (options.confirm || options.selections) throw new Error("Preview and import confirmation are separate actions.");
     const capture = workspaceCaptureDefault(context);
     const content = { prompts: capture, toolDetails: capture };
-    const result = await runImport({ ...deps, key: context.ingestKey, endpoints, project, source,
+    const result = await runImport({ ...deps, key: context.ingestKey, endpoints, project, source, identity,
       sinceMs: options.sinceMs, content: { "claude-code": content, codex: content }, previewOnly: true });
     const preview: Preview = { version: 1, workspace: context.name, keyHash: keyHash(context.ingestKey),
       project, createdAt: Date.now(), scope: expected, window: result.window, content: result.content,
@@ -53,7 +57,7 @@ export async function importWorkspaceHistory(options: {
   const verified = await verifyScope({ key: context.ingestKey, expected,
     connectivityUrl: resolveEndpoints(endpoints).connectivityUrl, fetchImpl: deps.fetchImpl });
   if (verified.state !== "scope_verified") throw new Error(`Workspace is unavailable: ${verified.state}. No history was uploaded.`);
-  return runImport({ ...deps, key: context.ingestKey, endpoints, project, source,
+  return runImport({ ...deps, key: context.ingestKey, endpoints, project, source, identity,
     sinceMs: Date.parse(preview.window.sinceIso), untilMs: Date.parse(preview.window.untilIso),
     content: preview.content, selectedPlans, maxSessions: 100, timeLimitMs: 120_000 });
 }

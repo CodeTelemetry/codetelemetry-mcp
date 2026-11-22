@@ -1,8 +1,8 @@
 {
   "serverName": "codetelemetry",
   "serverVersion": "0.7.0",
-  "registryHash": "6b55c6ab7ad6165184e5606b7e4b94db294abbaec9a7c9c59c81b7fd240b35bb",
-  "toolCount": 34,
+  "registryHash": "61a8660b080067f890e64ea89844a93a1880ca7b408926aaa2745fb50439faab",
+  "toolCount": 35,
   "tools": [
     {
       "name": "discover_grader_checks",
@@ -550,6 +550,18 @@
             "minimum": 0,
             "maximum": 31536000000,
             "description": "Inclusive maximum elapsed session span in milliseconds."
+          },
+          "start": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 253402300799,
+            "description": "Only sessions last active at or after this time, in Unix seconds."
+          },
+          "end": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 253402300799,
+            "description": "Only sessions last active before this time, in Unix seconds (after start)."
           },
           "activity": {
             "type": "string",
@@ -1893,9 +1905,35 @@
       }
     },
     {
+      "name": "estimate_history",
+      "title": "Estimate past sessions before importing them",
+      "description": "Use this when the user asks what importing their EXISTING local Claude Code or Codex history would cost, or how much history they have. Needs no key and sends nothing: it reads ~/.claude/projects and ~/.codex/sessions on this machine and returns sessions and tokens per source, per UTC month and per day, the oldest and newest session, and the last-30-day pace, priced with CodeTelemetry's public price list when it can be read. Imported tokens are billed like live usage: this month's included seat tokens first, then the per-million price from prepaid credit. Claude Code deletes local transcripts cleanupPeriodDays (default 30) after their last activity, so older uncaptured Claude sessions are gone for good; goneForGood says from when. Sessions already captured live are counted here but skipped by an import. To import, call import_history (dry run first).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "claude-code",
+              "codex",
+              "all"
+            ],
+            "description": "Which history to read (default all)."
+          },
+          "sinceDays": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 364,
+            "description": "How many days back (default 364, the whole retained year)."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "import_history",
       "title": "Import past Claude Code / Codex sessions",
-      "description": "Use this when the user wants their EXISTING local Claude Code or Codex history (sessions from before CodeTelemetry was set up) to show in CodeTelemetry. It reads ~/.claude/projects and ~/.codex/sessions on this machine and sends them through the normal ingest under the session's key, tagged as imported. ALWAYS call it first with dryRun true (the default) and show the user the summary — sessions, tokens, what is skipped and the content setting — then ask before calling again with dryRun false. Sessions already captured live or already imported are skipped; an interrupted import resumes. Each call sends at most maxSessions; while `remaining` > 0, call again. A persistent workspace restricts imports to its bound project and coding client; it never falls back to a personal or machine-wide destination. Imported history has tokens, prompts and tool results but no per-request latency, retries, permission decisions or active time. content defaults to live: exactly the prompt / tool text the user's live exporters are configured to send (Claude OTEL_LOG_USER_PROMPTS / OTEL_LOG_TOOL_DETAILS, Codex log_user_prompt); none sends no text; all sends prompt text and tool inputs regardless — only with the user's explicit agreement.",
+      "description": "Use this when the user wants their EXISTING local Claude Code or Codex history (sessions from before CodeTelemetry was set up) to show in CodeTelemetry. It reads ~/.claude/projects and ~/.codex/sessions on this machine and sends them through the normal ingest under the session's key, tagged as imported. ALWAYS call it first with dryRun true (the default) and show the user the summary — sessions, tokens, what is skipped and the content setting — then ask before calling again with dryRun false. Sessions already captured live or already imported are skipped; an interrupted import resumes. Each call sends at most maxSessions; while `remaining` > 0, call again. A persistent workspace restricts imports to its bound project and coding client; it never falls back to a personal or machine-wide destination. Imported history has tokens, prompts and tool results but no per-request latency, retries, permission decisions or active time. Imported tokens are billed like live usage (this month's included seat tokens first, then the per-million price from prepaid credit): when the server reports billing state, `billing` gives the run's estimated cost and whether the credit covers it, and a real import starts no session the credit cannot cover (stoppedBy budget). estimate_history prices the whole local history without a key. Rows carry the signed-in account's identity as live rows do, shown masked in `identity`; identity false omits it. content defaults to live: exactly the prompt / tool text the user's live exporters are configured to send (Claude OTEL_LOG_USER_PROMPTS / OTEL_LOG_TOOL_DETAILS, Codex log_user_prompt); none sends no text; all sends prompt text and tool inputs regardless — only with the user's explicit agreement.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1938,6 +1976,10 @@
             "minLength": 1,
             "maxLength": 1024,
             "description": "Only sessions whose working directory is this path or under it."
+          },
+          "identity": {
+            "type": "boolean",
+            "description": "Stamp the signed-in account's identity on imported rows, as live exporters do (default true; false omits it)."
           }
         },
         "additionalProperties": false

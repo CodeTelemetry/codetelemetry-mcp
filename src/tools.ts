@@ -49,7 +49,13 @@ import {
   looksLikeKey,
   scrub,
   runImport,
+  runEstimate,
   resolveImportContent,
+  resolveImportIdentity,
+  fetchPricing,
+  priceEstimate,
+  claudeRetentionCutoffMs,
+  IMPORT_NEVER_RECOVERS,
   type ImportRunResult,
   type Endpoints,
   type ExpectedKeyScope,
@@ -72,8 +78,16 @@ export type ToolContext = {
   /** Trusted host/test injection only. Public tools can write only recognized client paths. */
   configPathsOverride?: Partial<Record<OnboardClient,string>>;
   fetchImpl?: FetchLike;
-  /** Trusted test injection for import_history (history dirs, ledger, clock). */
-  importOverrides?: { claudeDir?: string; codexDir?: string; ledgerPath?: string; nowMs?: number; sleep?: (ms: number) => Promise<void> };
+  /** Trusted test injection for import_history / estimate_history (history dirs,
+   *  ledger, clock, identity files). */
+  importOverrides?: {
+    claudeDir?: string;
+    codexDir?: string;
+    ledgerPath?: string;
+    nowMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+    identityPaths?: { claudeConfigPath?: string; claudeSettingsPath?: string; codexAuthPath?: string };
+  };
 };
 
 export type ToolResult = { ok: boolean } & Record<string, unknown>;
@@ -508,9 +522,11 @@ const IMPORT_DEFAULT_SESSIONS = 50;
 const IMPORT_TIME_LIMIT_MS = 4 * 60_000;
 const IMPORT_MAX_MESSAGES = 10;
 
+const stripPaths = (s: string) => s.replace(/(?:[A-Za-z]:)?[\\/][^\s:;,]+\.jsonl/g, "<session file>");
+
 /** The model-safe view of an import run: counts and reasons, no paths or content. */
 function importSummary(r: ImportRunResult): ToolResult {
-  const stripPaths = (s: string) => s.replace(/(?:[A-Za-z]:)?[\\/][^\s:;,]+\.jsonl/g, "<session file>");
+  const unaffordable = r.billing && !r.billing.affordable;
   return {
     ok: r.ok,
     dryRun: r.dryRun,
@@ -521,6 +537,10 @@ function importSummary(r: ImportRunResult): ToolResult {
     remaining: r.remaining,
     stoppedBy: r.stoppedBy,
     ...(r.topup !== undefined ? { topup: r.topup } : {}),
+    // Imported tokens are billed like live usage (included seat tokens first,
+    // then prepaid credit); absent when the server reported no billing state.
+    ...(r.billing ? { billing: r.billing } : {}),
+    ...(r.identity ? { identity: r.identity } : {}),
     sources: r.sources.map((s) => ({
       source: s.source,
       filesFound: s.filesFound,
@@ -530,6 +550,9 @@ function importSummary(r: ImportRunResult): ToolResult {
       events: s.events,
       tokenPoints: s.metricPoints,
       tokens: s.tokens,
+      months: s.months.slice(-13),
+      firstEventMs: s.firstEventMs,
+      lastEventMs: s.lastEventMs,
       skipped: s.skipped,
     })),
     cleanupSessions: r.cleanup.length,
@@ -537,8 +560,12 @@ function importSummary(r: ImportRunResult): ToolResult {
     warningCount: r.warnings.length,
     errors: r.errors.slice(0, IMPORT_MAX_MESSAGES).map(stripPaths),
     note: r.dryRun
-      ? "Nothing was sent. Show the user this summary and the content setting, and ask before importing (dryRun false)."
-      : r.remaining > 0
+      ? "Nothing was sent. Show the user this summary, the content setting" + (r.billing ? ", the billing estimate" : "") +
+        " and the identity stamped on the rows, and ask before importing (dryRun false)." +
+        (unaffordable ? " The prepaid credit does not cover every session: a real import stops before the first one it cannot pay for." : "")
+      : r.stoppedBy === "budget"
+        ? "Stopped for budget: add credit or seats, then call import_history again with the same arguments; finished sessions are skipped."
+        : r.remaining > 0
         ? "More sessions remain: call import_history again with the same arguments to continue."
         : "Import finished for this window. Imported sessions show in the dashboards like live ones, without latency, decisions or active time.",
   };
@@ -1051,6 +1078,8 @@ export const TOOLS: ToolDef[] = [
         assistant: { type: "string", enum: ["all", ...SESSION_FILTER_ASSISTANTS], description: "Assistant filter (default all)." },
         minDurationMs: { type: "integer", minimum: 0, maximum: 31_536_000_000, description: "Inclusive minimum elapsed session span in milliseconds." },
         maxDurationMs: { type: "integer", minimum: 0, maximum: 31_536_000_000, description: "Inclusive maximum elapsed session span in milliseconds." },
+        start: { type: "integer", minimum: 0, maximum: 253_402_300_799, description: "Only sessions last active at or after this time, in Unix seconds." },
+        end: { type: "integer", minimum: 0, maximum: 253_402_300_799, description: "Only sessions last active before this time, in Unix seconds (after start)." },
         // ELL-232. Identical to the hosted registry's property (the API's
         // sessionActivitySearch test compares this committed manifest with it).
         activity: {
@@ -1907,6 +1936,68 @@ export const TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "estimate_history",
+    title: "Estimate past sessions before importing them",
+    description:
+      "Use this when the user asks what importing their EXISTING local Claude Code or Codex history would cost, or how much history they have. " +
+      "Needs no key and sends nothing: it reads ~/.claude/projects and ~/.codex/sessions on this machine and returns sessions and tokens per source, per UTC month and per day, the oldest and newest session, and the last-30-day pace, " +
+      "priced with CodeTelemetry's public price list when it can be read. Imported tokens are billed like live usage: this month's included seat tokens first, then the per-million price from prepaid credit. " +
+      "Claude Code deletes local transcripts cleanupPeriodDays (default 30) after their last activity, so older uncaptured Claude sessions are gone for good; goneForGood says from when. " +
+      "Sessions already captured live are counted here but skipped by an import. To import, call import_history (dry run first).",
+    inputSchema: obj({
+      source: { type: "string", enum: ["claude-code", "codex", "all"], description: "Which history to read (default all)." },
+      sinceDays: { type: "integer", minimum: 1, maximum: 364, description: "How many days back (default 364, the whole retained year)." },
+    }),
+    async handler(args, ctx) {
+      const source = args.source ?? "all";
+      if (source !== "all" && source !== "claude-code" && source !== "codex") {
+        return { ok: false, error: "bad_input", message: "source must be claude-code, codex or all" };
+      }
+      const sinceDays = args.sinceDays ?? 364;
+      if (typeof sinceDays !== "number" || !Number.isInteger(sinceDays) || sinceDays < 1 || sinceDays > 364) {
+        return { ok: false, error: "bad_input", message: "sinceDays must be 1-364" };
+      }
+      const o = ctx.importOverrides ?? {};
+      const now = o.nowMs ?? Date.now();
+      const estimate = await runEstimate({
+        source,
+        sinceMs: Math.floor((now - sinceDays * 86_400_000) / 86_400_000) * 86_400_000,
+        nowMs: now,
+        claudeDir: o.claudeDir,
+        codexDir: o.codexDir,
+        claudeSettingsPath: o.identityPaths?.claudeSettingsPath ?? ctx.configPathsOverride?.claude,
+        timeLimitMs: IMPORT_TIME_LIMIT_MS,
+      });
+      const pricing = await fetchPricing(endpointsFor(ctx).apiBase, ctx.fetchImpl);
+      const cost = pricing ? priceEstimate(estimate, pricing) : null;
+      const days = estimate.claudeCleanupPeriodDays;
+      return {
+        ok: true,
+        estimate: {
+          ...estimate,
+          warnings: estimate.warnings.slice(0, IMPORT_MAX_MESSAGES).map(stripPaths),
+        },
+        pricing,
+        cost,
+        goneForGood: {
+          ...(days !== null ? {
+            claudeCleanupPeriodDays: days,
+            claudeCutoffIso: new Date(claudeRetentionCutoffMs(now, days)).toISOString(),
+            claude: `Claude Code deletes transcripts ${days} day(s) after their last activity, so Claude Code sessions before the cutoff that CodeTelemetry did not capture are gone for good.`,
+          } : {}),
+          codex: "Codex keeps its rollouts until they are removed.",
+          neverRecovered: `An import never recovers ${IMPORT_NEVER_RECOVERS}.`,
+        },
+        note: "Nothing was sent and no key was used. " +
+          (cost
+            ? "cost.uploadCostUsd prices every estimated token before the included seat tokens (a real bill is at most this); cost.monthlyUsdOneSeat is one seat at the last-30-day pace. "
+            : `Prices could not be read; see ${endpointsFor(ctx).apiBase}/estimate. `) +
+          "Show the user the totals by month and the gone-for-good cutoff; to import, call import_history with dryRun true first " +
+          `and sinceDays ${sinceDays} (its default is 30 days, so without it the import covers less than this estimate).`,
+      };
+    },
+  },
+  {
     name: "import_history",
     title: "Import past Claude Code / Codex sessions",
     description:
@@ -1916,6 +2007,8 @@ export const TOOLS: ToolDef[] = [
       "Sessions already captured live or already imported are skipped; an interrupted import resumes. Each call sends at most maxSessions; while `remaining` > 0, call again. " +
       "A persistent workspace restricts imports to its bound project and coding client; it never falls back to a personal or machine-wide destination. " +
       "Imported history has tokens, prompts and tool results but no per-request latency, retries, permission decisions or active time. " +
+      "Imported tokens are billed like live usage (this month's included seat tokens first, then the per-million price from prepaid credit): when the server reports billing state, `billing` gives the run's estimated cost and whether the credit covers it, and a real import starts no session the credit cannot cover (stoppedBy budget). estimate_history prices the whole local history without a key. " +
+      "Rows carry the signed-in account's identity as live rows do, shown masked in `identity`; identity false omits it. " +
       "content defaults to live: exactly the prompt / tool text the user's live exporters are configured to send (Claude OTEL_LOG_USER_PROMPTS / OTEL_LOG_TOOL_DETAILS, Codex log_user_prompt); none sends no text; all sends prompt text and tool inputs regardless — only with the user's explicit agreement.",
     inputSchema: obj({
       dryRun: { type: "boolean", description: "Summarize without sending anything (default true)." },
@@ -1924,6 +2017,7 @@ export const TOOLS: ToolDef[] = [
       content: { type: "string", enum: ["none", "live", "all"], description: "Text to include (default live: what the live exporters send)." },
       maxSessions: { type: "integer", minimum: 1, maximum: IMPORT_MAX_SESSIONS, description: `Sessions to send in this call (default ${IMPORT_DEFAULT_SESSIONS}).` },
       project: { type: "string", minLength: 1, maxLength: 1024, description: "Only sessions whose working directory is this path or under it." },
+      identity: { type: "boolean", description: "Stamp the signed-in account's identity on imported rows, as live exporters do (default true; false omits it)." },
     }),
     async handler(args, ctx) {
       if (!ctx.session.hasKey()) return NO_KEY;
@@ -1948,6 +2042,9 @@ export const TOOLS: ToolDef[] = [
       if (args.project !== undefined && (typeof args.project !== "string" || !args.project.trim() || args.project.length > 1024)) {
         return { ok: false, error: "bad_input", message: "project must be a path" };
       }
+      if (args.identity !== undefined && typeof args.identity !== "boolean") {
+        return { ok: false, error: "bad_input", message: "identity must be a boolean" };
+      }
       const o = ctx.importOverrides ?? {};
       const now = o.nowMs ?? Date.now();
       const r = await runImport({
@@ -1956,6 +2053,7 @@ export const TOOLS: ToolDef[] = [
         source,
         sinceMs: Math.floor((now - sinceDays * 86_400_000) / 86_400_000) * 86_400_000,
         project: typeof args.project === "string" ? args.project.trim() : undefined,
+        identity: resolveImportIdentity({ source, disabled: args.identity === false, ...(o.identityPaths ?? {}) }),
         content: resolveImportContent(content, {
           claudeSettings: ctx.configPathsOverride?.claude ?? CLIENTS.claude.resolveConfigPath({}),
           codexConfig: ctx.configPathsOverride?.codex ?? CLIENTS.codex.resolveConfigPath({}),
@@ -1989,7 +2087,7 @@ export async function callTool(name: string, args: Record<string, unknown>, ctx:
   if (!tool) return { ok: false, error: "unknown_tool", message: `No tool named ${name}.` };
   try {
     if (!["workspace_context", "bootstrap_workspace"].includes(name)) await restoreWorkspace(ctx);
-    if (ctx.workspace && !["status", "workspace_context", "bootstrap_workspace", "seed_grader_config", "write_grader_config_artifact"].includes(name)) {
+    if (ctx.workspace && !["status", "workspace_context", "bootstrap_workspace", "seed_grader_config", "write_grader_config_artifact", "estimate_history"].includes(name)) {
       if (["onboard", "write_local_config"].includes(name)) throw new Error("Use bootstrap_workspace to configure this persistent workspace and its scoped client profile.");
       if (["authenticate", "auth_status", "get_ingest_key"].includes(name)) throw new Error("A persistent workspace is selected. Use bootstrap_workspace to reconnect or workspace_context to select another context.");
       const verified = await verifyScope({ key: ctx.session.useKey(), connectivityUrl: endpointsFor(ctx).connectivityUrl, expected: ctx.workspace.scope, fetchImpl: ctx.fetchImpl });

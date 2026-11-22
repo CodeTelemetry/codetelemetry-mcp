@@ -3,6 +3,7 @@
 //   codetelemetry-connect login         device flow → key → write + test + verify
 //   codetelemetry-connect doctor        re-fire a probe with the configured key
 //   codetelemetry-connect print-config  print the settings.json block (no key)
+//   codetelemetry-connect estimate      price local history before importing it (no key)
 //
 // The key is only ever read from disk / the device flow and used in-process; the
 // CLI prints it masked and never echoes the plaintext.
@@ -20,8 +21,17 @@ import { resolveEndpoints, type SettingsScope } from "./config.ts";
 import { CLIENTS, PI_EXTENSION_HINT } from "./clients.ts";
 import { ONBOARD_CLIENTS, isOnboardClient } from "./assistants.ts";
 import { looksLikeKey, mask } from "./keys.ts";
-import { runImport } from "./import/run.ts";
+import { runImport, runEstimate, type ImportRunResult } from "./import/run.ts";
 import { parseContentFlag, parseWhen, resolveImportContent, resolveImportKey } from "./import/options.ts";
+import { resolveImportIdentity } from "./import/identity.ts";
+import {
+  ESTIMATE_DEFAULT_DAYS,
+  IMPORT_NEVER_RECOVERS,
+  claudeRetentionCutoffMs,
+  fetchPricing,
+  priceEstimate,
+  type HistoryEstimate,
+} from "./import/estimate.ts";
 import { requestDeviceCode, pollForKey } from "./deviceClient.ts";
 import { sendTestEvent } from "./otlp.ts";
 import { confirmLanded, verifyScope } from "./connectivity.ts";
@@ -90,6 +100,9 @@ Usage:
                                               process health (see below)
   codetelemetry-connect kiro status|collect|enable|disable|uninstall
                                            Manage the background V3 transcript collector
+  codetelemetry-connect estimate [opts]       Price past Claude Code / Codex
+                                              sessions before importing them:
+                                              no key, nothing sent (see below)
   codetelemetry-connect import [opts]         Backfill past Claude Code / Codex
                                               sessions from local history files
                                               (see below)
@@ -145,6 +158,17 @@ host-metrics options:
   --interfaces           Keep per-interface network breakdown (off by default)
   --mounts               Keep per-mount filesystem breakdown (off by default)
 
+estimate options:
+  Reads the same local history as import, counts sessions and tokens per
+  source, month and day, and prices them with the public price list
+  (GET /api/pricing, the only request it makes). Claude Code deletes local
+  transcripts cleanupPeriodDays (default 30) after their last activity; the
+  estimate says which uncaptured sessions are already gone for good.
+  --source claude-code|codex|all   Which history to read (default: all)
+  --since <Nd|date>      Window start (default: 364d, the whole retained year)
+  --api-base <url>       Where the price list is read (default: https://codetelemetry.com)
+  --json                 Emit the estimate (and pricing) as JSON
+
 import options:
   Reads ~/.claude/projects/**/*.jsonl (Claude Code) and ~/.codex/sessions/**
   (Codex) locally and sends them as telemetry through the normal ingest, tagged
@@ -152,6 +176,10 @@ import options:
   imported, are skipped; an interrupted import resumes on the next run.
   Imported history has tokens, prompts and tool results, but no per-request
   latency, retries, permission decisions or active time.
+  Imported tokens are billed like live usage: they count toward this month's
+  included seat tokens first, then 5¢ per million from prepaid credit. When the
+  server reports billing state, an import starts no session the credit cannot
+  cover (--dry-run reports whether the whole window is affordable).
   --dry-run              Parse, check and summarize; send nothing
   --source claude-code|codex|all   Which history to read (default: all; --client
                          claude|codex narrows it too). pi is refused: it keeps
@@ -160,7 +188,13 @@ import options:
                          telemetry is kept 365 days by event time)
   --until <Nd|date>      Window end (default: now)
   --project <path>       Only sessions whose working directory is under <path>
-  --email <addr>         Stamp user.email on imported rows
+  --email <addr>         Stamp user.email on imported rows (overrides the
+                         signed-in account's email)
+  --no-identity          Do not stamp the signed-in account's identity (by
+                         default rows carry what live exporters send: Claude
+                         organization.id, user.account_id, user.account_uuid,
+                         user.email, user.id from ~/.claude.json; Codex
+                         user.account_id, user.email from ~/.codex/auth.json)
   --content none|live|all|prompts,tools
                          Text to include (default: live — exactly what your
                          live exporters send: Claude OTEL_LOG_USER_PROMPTS /
@@ -277,8 +311,9 @@ const ONBOARDING_FLAGS = new Set([
 const IMPORT_FLAGS = new Set([
   "json", "help", "h", "api-base", "endpoint", "codex", "settings",
   "dry-run", "source", "since", "until", "project", "email", "content", "max-sessions", "rate",
-  "time-limit", "key-env", "codex-config", "client",
+  "time-limit", "key-env", "codex-config", "client", "identity",
 ]);
+const ESTIMATE_FLAGS = new Set(["json", "help", "h", "source", "since", "api-base"]);
 
 function unknownFlag(flags: Parsed["flags"], allowed: Set<string>): string | null {
   for (const key of Object.keys(flags)) if (!allowed.has(key)) return key;
@@ -303,7 +338,123 @@ const SKIP_LABELS: Record<string, string> = {
   unreadable: "unreadable",
   changed_during_run: "changed while importing",
   deferred: "deferred (session cap / time limit)",
+  budget: "would exceed the prepaid credit (add credit, then re-run)",
+  time_limit: "not read before the time limit",
 };
+
+const fmtInt = (n: number): string => Math.round(n).toLocaleString("en-US");
+const fmtUsd = (n: number): string => (n > 0 && n < 0.01 ? "less than $0.01" : `$${n.toFixed(2)}`);
+/** 0.05 → "5¢", 1.5 → "$1.50". */
+const perMillionLabel = (usd: number): string =>
+  usd < 1 ? `${Math.round(usd * 100 * 1000) / 1000}¢` : `$${usd.toFixed(2)}`;
+const dateOf = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
+const sourceLabel = (s: string): string => (s === "claude-code" ? "Claude Code" : "Codex");
+
+function identityLine(identity: ImportRunResult["identity"]): string | null {
+  if (!identity) return null;
+  const parts = Object.entries(identity).map(([source, attrs]) =>
+    `${sourceLabel(source)} ${attrs["user.email"] ?? "(no email)"}` +
+      (Object.keys(attrs).filter((k) => k !== "user.email").length ? ` + ${Object.keys(attrs).filter((k) => k !== "user.email").join(", ")}` : ""));
+  return parts.length ? `Identity on imported rows: ${parts.join("; ")} (--no-identity to omit)` : null;
+}
+
+function billingLines(result: ImportRunResult): string[] {
+  const b = result.billing;
+  if (!b) return [];
+  if (!b.importsBilled) return [`Billing: imported tokens are not billed for this workspace (${fmtInt(b.estimatedTokens)} tokens).`];
+  if (b.unlimited) return [`Billing: ${fmtInt(b.estimatedTokens)} tokens; this workspace's token allowance is unlimited, so the import costs nothing.`];
+  return [
+    `Billing: ${fmtInt(b.estimatedTokens)} tokens ${result.dryRun ? "would cost" : "cost"} about ${fmtUsd(b.estimatedCostUsd)} at ` +
+      `${perMillionLabel(b.tokenPriceUsdPerMillion)} per million, after ${fmtInt(b.includedTokensRemaining)} included seat tokens left this month.`,
+    `  prepaid credit ${fmtUsd(Math.max(0, b.creditUsd))}: ` +
+      (b.affordable ? "affordable" : result.dryRun
+        ? "NOT affordable; a real import stops before the first session the credit cannot cover"
+        : "not enough for every session; the rest were skipped (add credit, then re-run)"),
+  ];
+}
+
+/** `codetelemetry-connect estimate`: no key; the only request is the public price list. */
+async function runEstimateCommand(flags: Parsed["flags"], fetchImpl?: typeof fetch): Promise<number> {
+  const rogue = unknownFlag(flags, ESTIMATE_FLAGS);
+  if (rogue) {
+    out(`Unknown option --${rogue} for estimate.`);
+    return 1;
+  }
+  const source = str(flags, "source") ?? "all";
+  if (source !== "all" && source !== "claude-code" && source !== "codex") {
+    out("--source must be claude-code, codex or all.");
+    return 1;
+  }
+  const now = Date.now();
+  let sinceMs: number | undefined;
+  if (hasFlag(flags, "since")) {
+    const raw = str(flags, "since");
+    const parsed = raw === undefined ? null : parseWhen(raw, now);
+    if (parsed === null) {
+      out("--since takes a number of days or hours (30d, 90d, 364d) or an ISO date (2026-09-01).");
+      return 1;
+    }
+    sinceMs = parsed;
+  }
+  const json = flags.json !== undefined && flags.json !== false;
+  const estimate = await runEstimate({ source, sinceMs, nowMs: now });
+  const apiBase = resolveEndpoints({ apiBase: str(flags, "api-base") }).apiBase;
+  const pricing = await fetchPricing(apiBase, fetchImpl);
+  const cost = pricing ? priceEstimate(estimate, pricing) : null;
+  if (json) {
+    out(JSON.stringify({ ...estimate, pricing, cost }, null, 2));
+    return 0;
+  }
+  for (const line of estimateLines(estimate, { pricing, cost, apiBase, now, since: str(flags, "since") })) out(line);
+  return 0;
+}
+
+function estimateLines(
+  e: HistoryEstimate,
+  o: { pricing: Awaited<ReturnType<typeof fetchPricing>>; cost: ReturnType<typeof priceEstimate> | null; apiBase: string; now: number; since?: string },
+): string[] {
+  const lines: string[] = [];
+  lines.push("Estimate from local history: nothing was sent and no key was used.");
+  lines.push(`Window ${e.window.sinceIso.slice(0, 10)} → ${e.window.untilIso.slice(0, 16).replace("T", " ")} UTC`);
+  lines.push("");
+  for (const s of e.sources) {
+    const tokens = s.tokens.input + s.tokens.output + s.tokens.cacheRead + s.tokens.cacheCreation;
+    lines.push(`${sourceLabel(s.source)}: ${fmtInt(s.sessions)} session(s), ${fmtInt(tokens)} tokens (${fmtInt(s.filesFound)} session file(s) found)`);
+    for (const [reason, n] of Object.entries(s.skipped)) if (n) lines.push(`  skipped ${n}: ${SKIP_LABELS[reason] ?? reason}`);
+  }
+  if (e.months.length) {
+    lines.push("");
+    lines.push("Tokens by month (UTC):");
+    for (const m of e.months) lines.push(`  ${m.month}  ${fmtInt(m.sessions).padStart(6)} session(s)  ${fmtInt(m.tokens).padStart(16)} tokens`);
+  }
+  if (e.oldestEventMs !== null && e.newestEventMs !== null) {
+    lines.push(`Oldest session: ${dateOf(e.oldestEventMs)} · newest session: ${dateOf(e.newestEventMs)}`);
+  }
+  lines.push("");
+  if (o.pricing && o.cost) {
+    const rate = `${perMillionLabel(o.pricing.tokenPriceUsdPerMillion)} per million tokens`;
+    lines.push(o.cost.importsBilled
+      ? `Uploading these sessions: about ${fmtUsd(o.cost.uploadCostUsd)} at ${rate} (included seat tokens apply first).`
+      : "Uploading these sessions: imported tokens are not billed.");
+    lines.push(`At this pace: about ${fmtUsd(o.cost.monthlyUsdOneSeat)}/month for one seat ` +
+      `(${fmtInt(e.trailing30dTokens)} tokens in the last 30 days; ${fmtInt(o.pricing.includedTokensPerSeat)} included per seat at ` +
+      `${fmtUsd(o.pricing.seatPriceUsdPerMonth)}/month, then ${rate}).`);
+  } else {
+    lines.push(`${fmtInt(e.totals.tokens)} tokens in total (${fmtInt(e.trailing30dTokens)} in the last 30 days). ` +
+      `Prices could not be read; see ${o.apiBase}/estimate`);
+  }
+  if (e.claudeCleanupPeriodDays !== null) {
+    const n = e.claudeCleanupPeriodDays;
+    lines.push(`Gone for good: Claude Code deletes transcripts ${n} day(s) after their last activity (cleanupPeriodDays, default 30), ` +
+      `so Claude Code sessions before ${dateOf(claudeRetentionCutoffMs(o.now, n))} that CodeTelemetry did not capture are gone for good. ` +
+      "Codex keeps its rollouts until you remove them.");
+  }
+  lines.push(`An import never recovers ${IMPORT_NEVER_RECOVERS}; those exist only in live telemetry.`);
+  for (const w of e.warnings.slice(0, 10)) lines.push(`warning: ${w}`);
+  lines.push("");
+  lines.push(`Next: codetelemetry-connect import --dry-run --since ${o.since ?? `${ESTIMATE_DEFAULT_DAYS}d`}`);
+  return lines;
+}
 
 async function runImportCommand(
   positional: string[],
@@ -393,6 +544,11 @@ async function runImportCommand(
     out("--project and --email need a value.");
     return 1;
   }
+  if (hasFlag(flags, "identity") && flags.identity !== false) {
+    out("--no-identity takes no value.");
+    return 1;
+  }
+  const identity = resolveImportIdentity({ source, disabled: flags.identity === false });
 
   const log = json.on ? undefined : out;
   log?.(`${dry.on ? "Dry run: reading" : "Importing"} local history with ${mask(resolved.key)} (from ${resolved.from})…`);
@@ -404,6 +560,7 @@ async function runImportCommand(
     untilMs,
     project,
     email,
+    identity,
     content: resolveImportContent(content, paths),
     dryRun: dry.on,
     maxSessions,
@@ -432,10 +589,19 @@ async function runImportCommand(
     if (tok.input + tok.output + tok.cacheRead + tok.cacheCreation > 0) {
       out(`  tokens: ${tok.input} input, ${tok.output} output, ${tok.cacheRead} cache read, ${tok.cacheCreation} cache write`);
     }
+    if (s.months.length) {
+      out(`  by month: ${s.months.map((m) => `${m.month} ${m.sessions} session(s) ${fmtInt(m.tokens)} tokens`).join("; ")}`);
+    }
+    if (s.firstEventMs !== null && s.lastEventMs !== null) out(`  sessions from ${dateOf(s.firstEventMs)} to ${dateOf(s.lastEventMs)}`);
     for (const [reason, n] of Object.entries(s.skipped)) {
       if (n) out(`  skipped ${n}: ${SKIP_LABELS[reason] ?? reason}`);
     }
   }
+  const who = identityLine(result.identity);
+  if (who) out(`\n${who}`);
+  const billing = billingLines(result);
+  if (billing.length) out("");
+  for (const line of billing) out(line);
   if (result.remaining) out(`\n${result.remaining} session(s) remain — re-run the same command to continue.`);
   for (const c of result.cleanup) out(`  cleanup: ${c.source} ${c.sessionId} → import.plan ${c.plans.join(", ")}`);
   for (const w of result.warnings.slice(0, 20)) out(`warning: ${w}`);
@@ -465,6 +631,8 @@ export async function run(argv: string[]): Promise<number> {
     out(HELP);
     return 0;
   }
+
+  if (cmd === "estimate") return runEstimateCommand(flags);
 
   if (cmd === "repository-metadata") {
     if (unknownFlag(flags, new Set(["send","state"])) || (flags.state !== undefined && typeof flags.state !== "string") || (flags.send !== undefined && typeof flags.send !== "boolean")) throw new Error("Put --send after the selected files.");

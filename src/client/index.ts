@@ -165,13 +165,30 @@ export {
 export { readClaudeContentFlags } from "./settings.ts";
 export {
   runImport,
+  runEstimate,
   RETENTION_DAYS,
   DEFAULT_SINCE_DAYS,
   type ImportRunOptions,
   type ImportRunResult,
+  type ImportRunBilling,
   type ImportSourceSummary,
   type ContentBySource,
+  type EstimateRunOptions,
+  type HistoryEstimate,
+  type HistoryEstimateSource,
+  type MonthBucket,
 } from "./import/run.ts";
+export {
+  ESTIMATE_DEFAULT_DAYS,
+  IMPORT_NEVER_RECOVERS,
+  claudeRetentionCutoffMs,
+  fetchPricing,
+  parsePricing,
+  priceEstimate,
+  type EstimateCost,
+  type PublicPricing,
+} from "./import/estimate.ts";
+export { resolveImportIdentity, readClaudeIdentity, readCodexIdentity, type IdentityResolveOptions } from "./import/identity.ts";
 export { resolveImportKey, resolveImportContent, parseContentFlag, parseWhen } from "./import/options.ts";
 export { NO_CONTENT, ALL_CONTENT, type ContentPolicy, type ImportSource } from "./import/model.ts";
 

@@ -22,6 +22,8 @@ export class FakeServer {
   statusCalls: any[] = [];
   ingestCalls: Array<{ path: string; part: string }> = [];
   statusFault: number | null = null;
+  /** The import-status billing block (C1), returned as-is when set. */
+  billing: unknown = undefined;
   /** Decide the fate of an ingest request (by path + part label). */
   fault: (path: string, part: string, attempt: number) => Fault = () => "ok";
   #attempts = new Map<string, number>();
@@ -33,7 +35,10 @@ export class FakeServer {
     if (u.origin === API && u.pathname === "/api/agent/import-status") {
       this.statusCalls.push(body);
       if (this.statusFault) return new Response(JSON.stringify({ error: "x" }), { status: this.statusFault });
-      return Response.json({ ok: true, sessions: body.sessions.map((s: any) => this.status(s)), settleMs: 300_000, nowMs: NOW });
+      return Response.json({
+        ok: true, sessions: body.sessions.map((s: any) => this.status(s)), settleMs: 300_000, nowMs: NOW,
+        ...(this.billing !== undefined ? { billing: this.billing } : {}),
+      });
     }
     assert.equal(u.origin, INGEST);
     const resource = flat((body.resourceLogs ?? body.resourceMetrics)[0].resource.attributes);

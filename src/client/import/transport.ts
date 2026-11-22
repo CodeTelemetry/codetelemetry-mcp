@@ -127,6 +127,46 @@ export async function postOtlp(opts: PostOptions): Promise<PostOutcome> {
 
 export type StatusRequestSession = { sessionId: string; startMs: number; endMs: number; probePlan?: string };
 
+/**
+ * The import-status route's billing block (ELL-655): imported tokens count
+ * toward the current month like live usage — seat-included tokens first, then
+ * the per-million price from prepaid credit. Absent when the server could not
+ * read billing state (or predates it); the importer then runs no budget check.
+ */
+export type ImportBilling = {
+  importsBilled: boolean;
+  tokenPriceUsdPerMillion: number;
+  /** This calendar month's seat allowance not yet used. */
+  includedTokensRemaining: number;
+  /** Prepaid credit balance. */
+  creditUsd: number;
+  /** The free-token allowance is effectively unlimited. */
+  unlimited: boolean;
+};
+
+/** Effectively unlimited, as the server reports a free-token allowance. */
+export const UNLIMITED_TOKENS = 1e15;
+
+const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+
+/** Defensive parse: any malformed field drops the whole block (old behaviour). */
+export function parseImportBilling(raw: unknown): ImportBilling | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const b = raw as Record<string, unknown>;
+  if (typeof b.importsBilled !== "boolean") return undefined;
+  if (!finite(b.tokenPriceUsdPerMillion) || b.tokenPriceUsdPerMillion < 0) return undefined;
+  if (!finite(b.includedTokensRemaining) || b.includedTokensRemaining < 0) return undefined;
+  if (!finite(b.creditUsd)) return undefined;
+  if (b.unlimited !== undefined && typeof b.unlimited !== "boolean") return undefined;
+  return {
+    importsBilled: b.importsBilled,
+    tokenPriceUsdPerMillion: b.tokenPriceUsdPerMillion,
+    includedTokensRemaining: b.includedTokensRemaining,
+    creditUsd: b.creditUsd,
+    unlimited: typeof b.unlimited === "boolean" ? b.unlimited : b.includedTokensRemaining >= UNLIMITED_TOKENS,
+  };
+}
+
 export type StatusResponse = {
   sessions: Array<{
     sessionId: string;
@@ -135,6 +175,7 @@ export type StatusResponse = {
   }>;
   settleMs: number;
   nowMs: number;
+  billing?: ImportBilling;
 };
 
 export type StatusOutcome =
@@ -179,14 +220,16 @@ export async function fetchStatus(opts: {
     }
     if (res.status !== 200) return { kind: "unavailable", detail: `HTTP ${res.status}` };
     try {
-      const json = (await res.json()) as Partial<StatusResponse> & { ok?: boolean };
+      const json = (await res.json()) as Partial<Omit<StatusResponse, "billing">> & { ok?: boolean; billing?: unknown };
       if (!Array.isArray(json.sessions)) return { kind: "unavailable", detail: "malformed status response" };
+      const billing = parseImportBilling(json.billing);
       return {
         kind: "ok",
         value: {
           sessions: json.sessions,
           settleMs: typeof json.settleMs === "number" ? json.settleMs : 300_000,
           nowMs: typeof json.nowMs === "number" ? json.nowMs : Date.now(),
+          ...(billing ? { billing } : {}),
         },
       };
     } catch {

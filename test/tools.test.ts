@@ -24,6 +24,7 @@ test("registry exposes the documented tools with JSON-schema inputs", () => {
     "configure_github_pr_gate",
     "count_reply_phrases",
     "discover_grader_checks",
+    "estimate_history",
     "estimate_linear_issue",
     "estimate_plan",
     "estimate_task_size",
@@ -234,6 +235,29 @@ test("search_sessions and compare_sessions pass server-built canonical links thr
   const compared = await callTool("compare_sessions", { sessions: [{ sessionId: "a" }, { sessionId: "b" }] }, ctx);
   assert.deepEqual((compared.sessionLinks as any[]).map(link => link.sessionUrl), [url("a"), url("b")]);
   assert.equal(compared.evidenceLinkLimitation, "Evidence ids in this result are not deep-linked.");
+});
+
+test("search_sessions forwards an optional start/end window (Unix seconds) to the session-search request", async () => {
+  const key = "cot_" + "sessionsearchwindowkey00001";
+  const session = new OnboardingSession(); session.setKey(key, "pasted");
+  const bodies: any[] = [];
+  const ctx: ToolContext = { session, endpointsOverride: { apiBase: "https://example.test" }, fetchImpl: async (url, init) => {
+    assert.equal(String(url), "https://example.test/api/agent/session-search");
+    bodies.push(JSON.parse(String(init?.body)));
+    return Response.json({ ok: true, scope: "personal", report: { results: [], total: 0, limit: 25, offset: 0, hasMore: false, nextOffset: null, query: {} } });
+  } };
+  const schema = TOOLS.find((tool) => tool.name === "search_sessions")!.inputSchema as any;
+  for (const field of ["start", "end"]) {
+    assert.equal(schema.properties[field].type, "integer");
+    assert.equal(schema.properties[field].minimum, 0);
+    assert.equal(schema.properties[field].maximum, 253_402_300_799);
+    assert.match(schema.properties[field].description, /Unix seconds/);
+  }
+  const r = await callTool("search_sessions", { q: "imported", start: 1_790_000_000, end: 1_792_000_000 }, ctx);
+  assert.equal(r.ok, true);
+  assert.deepEqual(bodies[0], { q: "imported", start: 1_790_000_000, end: 1_792_000_000 });
+  await callTool("search_sessions", { q: "x" }, ctx);
+  assert.equal("start" in bodies[1], false, "absent unless asked");
 });
 
 test("compare_sessions validates a bounded distinct cohort and uses the authenticated projection route", async () => {

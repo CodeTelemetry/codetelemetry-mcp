@@ -192,7 +192,8 @@ contexts use the established scope-v1 device flow.
 | Tool | What it does |
 | --- | --- |
 | `count_reply_phrases` | Count how often your own phrases appear in your Claude model replies, per day or week and per model (turns, turns with a match, per-phrase counts). Plain-text phrases with `{a|b}` / `[a|b]` groups, whole-word and case-insensitive; main-thread replies only; counts and session references, never reply text. |
-| `import_history` | Import this machine's past Claude Code / Codex sessions (`~/.claude/projects`, `~/.codex/sessions`) through the normal ingest, tagged as imported. Dry run by default; skips sessions captured live or already imported; resumes interrupted imports; pages with `remaining`. Content defaults to `live` (what your live exporters send); `none` opts out. |
+| `estimate_history` | Price this machine's past Claude Code / Codex sessions before importing them: sessions and tokens per source, UTC month and day, oldest and newest session, last-30-day pace, priced with the public price list. Needs no key and sends nothing else; says from when uncaptured Claude Code sessions are gone for good (`cleanupPeriodDays`). |
+| `import_history` | Import this machine's past Claude Code / Codex sessions (`~/.claude/projects`, `~/.codex/sessions`) through the normal ingest, tagged as imported. Dry run by default; skips sessions captured live or already imported; resumes interrupted imports; pages with `remaining`. Content defaults to `live` (what your live exporters send); `none` opts out. Imported tokens are billed like live usage: the result's `billing` prices the run, and a real import starts no session the prepaid credit cannot cover. Rows carry the signed-in account's identity as live rows do (`identity: false` omits it). |
 | `workspace_context` | Save, list or select persistent verified workspace contexts. Repository bindings contain no credentials; cold MCP processes restore the bound context. |
 | `bootstrap_workspace` | Create or select an organization, authorize once, and resume funding, repository-local telemetry, Grader publication, Terraform artifacts and GitHub gate verification. |
 | `authenticate` | Start device-code auth; returns a URL + short code for the human to approve. Optional `organizationId` connects one of the user's organizations; optional `workspaceUrl` picks a CodeTelemetry server (codetelemetry.com hosts only). |
@@ -204,7 +205,7 @@ contexts use the established scope-v1 device flow.
 | `onboard` | One-shot: key → config → test → verify, returns a checklist. |
 | `status` | Read-only diagnostics (no secrets). |
 | `get_cost_signal` | Read recent tokens and observed model cost for the caller's own telemetry, with what CodeTelemetry meters for those tokens shown separately. |
-| `search_sessions` | Search the same bounded session index as the UI by prompt/title text, assistant, repo, model, duration, and sort order; returns metadata and match fields, never prompt text. Results are ordered by `lastSeen` (most recently active, not started or finished); `activity: "substantive"` keeps only sessions with observed agent work and counts what it left out. |
+| `search_sessions` | Search the same bounded session index as the UI by prompt/title text, assistant, repo, model, duration, and sort order; returns metadata and match fields, never prompt text. Results are ordered by `lastSeen` (most recently active, not started or finished); `activity: "substantive"` keeps only sessions with observed agent work and counts what it left out. Optional `start` / `end` (Unix seconds) keep sessions last active in that window. |
 | `read_session_events` | Read one of your sessions' recorded events in order (prompts, assistant text, commands, tool inputs and outputs, exit codes), after privacy filtering and independent of any interpretation. Pages with a cursor, jumps by position or time, filters by kind, recorded outcome, tool or text, shows the context around an event, and expands one event's full retained text. |
 | `interpret_session` | Read CodeTelemetry's own bounded, materialized interpretation of a session: optional hints to verify against the recorded events. Evidence cards are opt-in, privacy-filtered and pointer-resolved; the tool never replays raw telemetry. |
 | `compare_sessions` | Compare 2–10 distinct materialized personal sessions. Returns descriptive repeated patterns, evidence pointers, denominators, observed outcome counterexamples, one-offs and confidence limits; it never replays raw telemetry or claims causation. |
@@ -410,6 +411,57 @@ These options are independent: opting into repository observation does not turn
 on prompt/body telemetry, and `enrich` does not install repository hooks. A later
 run with `repositoryObservation` omitted or false removes only CodeTelemetry's
 managed hook entries and helper/state files; unrelated user hooks are preserved.
+
+## Price and import past sessions
+
+Both assistants keep local history that CodeTelemetry can import, but it does
+not keep forever. Price it first; nothing is sent and no key is needed:
+
+```bash
+npx -y @codetelemetry/connect estimate            # the whole retained year (364 days)
+npx -y @codetelemetry/connect estimate --since 90d --source claude-code
+npx -y @codetelemetry/connect estimate --json
+```
+
+The estimate reads `~/.claude/projects` (or `$CLAUDE_CONFIG_DIR/projects`) and
+`~/.codex/sessions` (or `$CODEX_HOME/sessions`) with the importer's own parsers
+and reports sessions and tokens per source and per UTC month, the oldest and
+newest session, what uploading them would cost, and the monthly cost of one seat
+at the last 30 days' pace. Tokens are input + output + cache read + cache
+creation, each counted once. Its only request is the public price list
+(`GET /api/pricing`); without it, the estimate prints the token totals and a
+link to the pricing page. In a browser, `estimateFiles` from
+`@codetelemetry/mcp/client/import/browser` estimates dropped files the same way;
+`runEstimate` (`@codetelemetry/mcp/client/import/run`) is the Node entry point and
+`@codetelemetry/mcp/client/import/estimate` holds the shared core
+(`HistoryEstimate`, `EstimateBuilder`, `fetchPricing`, `priceEstimate`).
+
+Some data is gone for good. Claude Code deletes a transcript at startup once it
+is `cleanupPeriodDays` (settings.json, default 30) past its last activity, so
+sessions CodeTelemetry did not capture before then cannot be imported; the
+estimate names the cutoff date. Codex keeps rollouts until they are removed. No
+import recovers what only live telemetry carries: per-request latency and
+retries, permission decisions, active time, lines-of-code / commit /
+pull-request counters, model responses and tool output content.
+
+Imported tokens are billed like live usage: they count toward the current
+month, seat-included tokens first, then the per-million token price from
+prepaid credit. When the import-status read reports the workspace's billing
+state, `import --dry-run` shows the run's estimated cost and whether the credit
+covers it, and a real import never starts a session whose cumulative cost
+would exceed the included allowance plus credit: the rest are skipped as
+`budget` (`stoppedBy: "budget"`) and the same command continues once credit is
+added. Without billing state the import behaves as before.
+
+Imported rows carry the identity attributes the live exporters send, on every
+record: Claude Code's `organization.id`, `user.account_id`,
+`user.account_uuid`, `user.email` and `user.id` from `~/.claude.json` (or
+`$CLAUDE_CONFIG_DIR`), and Codex's `user.account_id` and `user.email` from the
+ChatGPT sign-in in `~/.codex/auth.json` (or `$CODEX_HOME`; the id token is
+decoded locally and never sent or logged). Output shows the identity masked.
+`--email` overrides `user.email`; `--no-identity` (MCP: `identity: false`)
+omits the rest. A browser upload stamps only the email it is given
+(`importFiles(files, { identity: { email } })`).
 
 ## Estimating a plan
 

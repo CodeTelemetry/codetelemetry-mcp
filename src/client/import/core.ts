@@ -16,13 +16,13 @@
 //    with live exporters), a wall-clock deadline, and a session cap.
 // The result is model-safe: masked key, ids and counts — never content.
 
-import type { ContentPolicy, ImportAttributes, ImportLog, ImportMetric, ImportSource, ImportedSession } from "./model.ts";
-import { NO_CONTENT, sessionKeyOf, trimSessionToWindow } from "./model.ts";
+import type { ContentPolicy, IdentityBySource, ImportAttributes, ImportIdentity, ImportLog, ImportMetric, ImportSource, ImportedSession, MonthBucket } from "./model.ts";
+import { NO_CONTENT, addToMonths, maskIdentity, sessionKeyOf, tokensByMonth, trimSessionToWindow } from "./model.ts";
 import { CLAUDE_SERVICE, CODEX_SERVICE, completionMarker, convertSession } from "./convert.ts";
 import { chunkForPost, toOtlpLogs, toOtlpMetrics } from "./otlpImport.ts";
 import type { JournalEvent, LedgerEntry } from "./ledger.ts";
 import { COMMIT_PART_LABEL, decide, logPartLabel, metricPartLabel, type Decision, type SessionStatus, type SkipReason } from "./protocol.ts";
-import { fetchStatus, makePacer, postOtlp, sleepMs, type StatusRequestSession } from "./transport.ts";
+import { fetchStatus, makePacer, postOtlp, sleepMs, type ImportBilling, type StatusRequestSession } from "./transport.ts";
 import type { FetchLike } from "../otlp.ts";
 
 /** Raw telemetry retention (clickhouse-tiering-runtime.sh DELETE_DAYS), keyed
@@ -56,7 +56,7 @@ export type ImportTool = "connect-cli" | "mcp" | "web-upload";
 export type SkipCounts = Partial<Record<
   | SkipReason
   | "older" | "newer" | "active" | "filtered" | "ledger" | "empty"
-  | "too_large" | "too_many_events" | "unreadable" | "changed_during_run" | "deferred",
+  | "too_large" | "too_many_events" | "unreadable" | "changed_during_run" | "deferred" | "budget",
   number
 >>;
 
@@ -71,6 +71,24 @@ export type ImportSourceSummary = {
   events: number;
   metricPoints: number;
   tokens: { input: number; output: number; cacheRead: number; cacheCreation: number };
+  /** The imported (or, on a dry run, importable) sessions by UTC month: a
+   *  session counts in the month it starts, tokens in their model call's month. */
+  months: MonthBucket[];
+  /** First / last event of those sessions (epoch ms). */
+  firstEventMs: number | null;
+  lastEventMs: number | null;
+};
+
+/** What an import would cost, from the import-status billing block. */
+export type ImportRunBilling = ImportBilling & {
+  /** Tokens of the sessions this run sends (or, on a dry run, would send). */
+  estimatedTokens: number;
+  /** max(0, tokens - includedTokensRemaining) × price / 1e6; 0 when unlimited. */
+  estimatedCostUsd: number;
+  /** Every eligible session fits in the included allowance plus prepaid
+   *  credit; false on a real run that skipped sessions for budget (whose
+   *  estimatedTokens then cover only the sessions it kept). */
+  affordable: boolean;
 };
 
 export type StopReason = "budget" | "auth" | "busy" | "time_limit" | "status_unavailable";
@@ -90,6 +108,10 @@ export type ImportRunResult = {
   stoppedBy: StopReason | null;
   /** Billing top-up link when ingest refused for budget. */
   topup?: string | null;
+  /** Present when the server reported billing state (absent: no budget check ran). */
+  billing?: ImportRunBilling;
+  /** Identity stamped on the imported rows, masked (emails e***@g***.com, ids shortened). */
+  identity?: Partial<Record<ImportSource, Record<string, string>>>;
   /** Sessions holding an uncommitted import of a different plan: rows an
    *  operator must remove (by import.plan) before they can be re-imported. */
   cleanup: Array<{ source: ImportSource; sessionId: string; plans: string[] }>;
@@ -154,6 +176,8 @@ export type Prepared = {
   endMs: number;
   plan: { id: string; logParts: number; metricParts: number; events: number; metricPoints: number };
   tokens: ImportSourceSummary["tokens"];
+  /** Tokens per UTC month of each model call (the session's import months). */
+  monthTokens: Record<string, number>;
   warnings: string[];
   reload: () => Promise<ImportedSession | null>;
 };
@@ -169,6 +193,9 @@ export const emptySummary = (source: ImportSource): ImportSourceSummary => ({
   events: 0,
   metricPoints: 0,
   tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+  months: [],
+  firstEventMs: null,
+  lastEventMs: null,
 });
 
 export const bump = (s: ImportSourceSummary, reason: keyof SkipCounts, n = 1): void => {
@@ -224,19 +251,29 @@ function stableResource(session: ImportedSession, email: string | undefined): Im
   };
 }
 
+/** The identity attributes one session's records carry: the resolved
+ *  per-source identity, with an explicit email (`--email`) winning. */
+export function identityFor(source: ImportSource, identity: IdentityBySource | undefined, email: string | undefined): ImportIdentity {
+  return { ...(identity?.[source] ?? {}), ...(email ? { "user.email": email } : {}) };
+}
+
 /** Convert + chunk + hash. The id covers everything that reaches storage
- *  except the per-run id, so the same input always yields the same plan. */
+ *  except the per-run id, so the same input always yields the same plan —
+ *  identity included (it is on every record). */
 export async function buildPlan(
   session: ImportedSession,
   content: ContentPolicy,
   email: string | undefined,
   sha256Hex: Sha256Hex,
-): Promise<{ plan: Plan; stable: ImportAttributes }> {
-  const { logs, metrics } = convertSession(session, content);
+  identity?: IdentityBySource,
+): Promise<{ plan: Plan; stable: ImportAttributes; identity: ImportIdentity }> {
+  const who = identityFor(session.source, identity, email);
+  const { logs, metrics } = convertSession(session, content, who);
   const stable = stableResource(session, email);
   const id = (await sha256Hex(JSON.stringify({ v: IMPORT_VERSION, stable, sessionId: session.sessionId, logs, metrics }))).slice(0, 32);
   return {
     stable,
+    identity: who,
     plan: {
       id,
       logParts: chunkForPost(logs, LOG_PART_MAX_RECORDS, LOG_PART_MAX_BYTES),
@@ -265,6 +302,8 @@ export type PrepareOptions = {
   caseInsensitivePaths: boolean;
   content: ContentBySource;
   email?: string;
+  /** Identity per source, stamped on every record (CLI / MCP resolve it). */
+  identity?: IdentityBySource;
   sha256Hex: Sha256Hex;
 };
 
@@ -280,7 +319,7 @@ export async function prepareSession(
   if (session.startMs > opts.untilMs) return "newer";
   const trimmed = trimSessionToWindow(session, opts.sinceMs, opts.untilMs);
   if (!trimmed) return "older";
-  const { plan } = await buildPlan(trimmed, opts.content[session.source], opts.email, opts.sha256Hex);
+  const { plan } = await buildPlan(trimmed, opts.content[session.source], opts.email, opts.sha256Hex, opts.identity);
   return {
     source: session.source,
     sessionId: trimmed.sessionId,
@@ -295,6 +334,7 @@ export async function prepareSession(
       metricPoints: plan.metricPoints,
     },
     tokens: tokensOf(trimmed),
+    monthTokens: tokensByMonth(trimmed),
     warnings: trimmed.warnings,
     reload,
   };
@@ -360,6 +400,7 @@ export async function importPrepared(prepared: Prepared[], o: ImportPreparedOpti
   let stoppedBy = null as StopReason | null; // assigned inside closures too
   const statuses = new Map<string, SessionStatus>();
   let settleMs = 5 * 60_000;
+  let billing: ImportBilling | undefined;
   const askStatus = async (items: Prepared[], probe: boolean): Promise<boolean> => {
     // A probe costs the server one extra bounded read per session, so probe
     // batches are kept small (the route refuses more than MAX_STATUS_PROBES).
@@ -388,6 +429,7 @@ export async function importPrepared(prepared: Prepared[], o: ImportPreparedOpti
         return false;
       }
       settleMs = r.value.settleMs;
+      if (r.value.billing) billing = r.value.billing;
       for (const st of r.value.sessions) statuses.set(st.sessionId, st);
     }
     return true;
@@ -440,9 +482,45 @@ export async function importPrepared(prepared: Prepared[], o: ImportPreparedOpti
   const deferred = ready.length - toSend.length;
   for (const r of ready.slice(toSend.length)) bump(summaries.get(r.p.source)!, "deferred");
 
+  // Budget (ELL-655): imported tokens are billed like live usage: this
+  // month's included seat tokens first, then the per-million price from
+  // prepaid credit. With the server's billing state, a real import never
+  // starts a session the workspace cannot pay for; a dry run reports it.
+  let runBilling: ImportRunBilling | undefined;
+  let budgetCut = 0;
+  if (billing) {
+    const priced = billing;
+    const cost = (tokens: number) => importCostUsd(tokens, priced);
+    const credit = Math.max(0, priced.creditUsd);
+    let cumulative = 0;
+    let fits = toSend.length;
+    for (let i = 0; i < toSend.length; i++) {
+      cumulative += tokenTotal(toSend[i].p.tokens);
+      if (fits === toSend.length && cost(cumulative) > credit + 1e-9) fits = i;
+    }
+    runBilling = { ...priced, estimatedTokens: cumulative, estimatedCostUsd: roundUsd(cost(cumulative)), affordable: fits === toSend.length };
+    if (!dryRun && fits < toSend.length) {
+      const over = toSend.splice(fits);
+      budgetCut = over.length;
+      for (const r of over) bump(summaries.get(r.p.source)!, "budget");
+      const fitTokens = toSend.reduce((n, r) => n + tokenTotal(r.p.tokens), 0);
+      // The run's billing covers what it sends, not the sessions it skipped:
+      // the whole window's cost is in the error below.
+      runBilling = { ...runBilling, estimatedTokens: fitTokens, estimatedCostUsd: roundUsd(cost(fitTokens)) };
+      errors.push(
+        `Stopped before ${budgetCut} session(s): importing every eligible session would cost about ` +
+          `${usd(cost(cumulative))} (${cumulative} tokens at ${usd(priced.tokenPriceUsdPerMillion)} per million, after ` +
+          `${Math.floor(priced.includedTokensRemaining)} included seat tokens left this month), more than the ${usd(credit)} prepaid credit. ` +
+          (toSend.length ? `This run was limited to the ${toSend.length} oldest session(s) that fit (${fitTokens} tokens). ` : "Nothing was sent. ") +
+          "Add credit or seats, then re-run the same command; finished sessions are skipped.",
+      );
+    }
+  }
+
   // 3. Send (or, on a dry run, count what would be sent).
   const pacer = makePacer(ratePerMinute, sleep, clock);
   let topup: string | null | undefined;
+  let refusedForBudget = false;
   let sent = 0;
   let processed = 0;
   for (let i = 0; i < toSend.length; i++) {
@@ -452,6 +530,9 @@ export async function importPrepared(prepared: Prepared[], o: ImportPreparedOpti
       s.events += p.plan.events;
       s.metricPoints += p.plan.metricPoints;
       for (const k of ["input", "output", "cacheRead", "cacheCreation"] as const) s.tokens[k] += p.tokens[k];
+      addToMonths(s.months, p.startMs, p.monthTokens);
+      s.firstEventMs = s.firstEventMs === null ? p.startMs : Math.min(s.firstEventMs, p.startMs);
+      s.lastEventMs = s.lastEventMs === null ? p.endMs : Math.max(s.lastEventMs, p.endMs);
     };
     if (dryRun) {
       s.imported++;
@@ -469,12 +550,12 @@ export async function importPrepared(prepared: Prepared[], o: ImportPreparedOpti
     // Re-read: the plan must still be the one the server was asked about.
     const reloaded = await p.reload();
     const session = reloaded ? trimSessionToWindow(reloaded, o.sinceMs, o.untilMs) : null;
-    const rebuilt = session ? await buildPlan(session, o.content[p.source], o.email, o.sha256Hex) : null;
+    const rebuilt = session ? await buildPlan(session, o.content[p.source], o.email, o.sha256Hex, o.identity) : null;
     if (!session || !rebuilt || rebuilt.plan.id !== p.plan.id) {
       bump(s, "changed_during_run");
       continue;
     }
-    const { plan, stable } = rebuilt;
+    const { plan, stable, identity: who } = rebuilt;
     for (const w of p.warnings) warnings.push(`${p.source} ${p.sessionId}: ${w}`);
     const sessionKey = sessionKeyOf(p.source, p.sessionId);
     const resource = (part: string): ImportAttributes => ({
@@ -497,6 +578,7 @@ export async function importPrepared(prepared: Prepared[], o: ImportPreparedOpti
     const stopOn = (outcome: Awaited<ReturnType<typeof postOtlp>>): boolean => {
       if (outcome.kind === "budget") {
         stoppedBy = "budget";
+        refusedForBudget = true;
         topup = outcome.topup;
         return true;
       }
@@ -542,7 +624,7 @@ export async function importPrepared(prepared: Prepared[], o: ImportPreparedOpti
     if (!sessionFailed && !stoppedBy) {
       const marker = completionMarker(session, {
         id: plan.id, logParts: plan.logParts.length, metricParts: plan.metricParts.length, events: plan.events + plan.metricPoints,
-      });
+      }, who);
       const outcome = await postOtlp({
         url: `${o.ingestEndpoint}/v1/logs`, key, fetchImpl, pacer, sleep, retryAmbiguous: true,
         body: toOtlpLogs([marker], resource(COMMIT_PART_LABEL)),
@@ -563,9 +645,10 @@ export async function importPrepared(prepared: Prepared[], o: ImportPreparedOpti
       break;
     }
   }
-  const remaining = deferred + (toSend.length - processed);
+  const remaining = deferred + budgetCut + (toSend.length - processed);
+  if (budgetCut > 0 && !stoppedBy) stoppedBy = "budget";
 
-  if (stoppedBy === "budget") {
+  if (refusedForBudget) {
     errors.push(
       "Ingest refused with HTTP 402: this workspace's prepaid credit is exhausted, so it is not accepting " +
         "telemetry (live sessions included). Add credit or seats" + (topup ? ` at ${topup}` : "") +
@@ -597,10 +680,42 @@ export async function importPrepared(prepared: Prepared[], o: ImportPreparedOpti
     remaining,
     stoppedBy,
     ...(topup !== undefined ? { topup } : {}),
+    ...(runBilling ? { billing: runBilling } : {}),
+    ...maskedIdentity(sources.map((x) => x.source), o.identity, o.email),
     cleanup,
     warnings,
     errors,
   };
+}
+
+const tokenTotal = (t: ImportSourceSummary["tokens"]): number => t.input + t.output + t.cacheRead + t.cacheCreation;
+
+/** Sub-micro-dollar float noise removed. */
+export const roundUsd = (amount: number): number => Math.round(amount * 1e6) / 1e6;
+
+const usd = (amount: number): string => "$" + (amount > 0 && amount < 0.01 ? amount.toFixed(4) : amount.toFixed(2));
+
+/** What `tokens` imported tokens cost under the server's billing state:
+ *  included seat tokens first, then the per-million price; 0 when imports are
+ *  not billed or the allowance is unlimited. */
+export function importCostUsd(tokens: number, billing: ImportBilling): number {
+  if (!billing.importsBilled || billing.unlimited) return 0;
+  return (Math.max(0, tokens - billing.includedTokensRemaining) * billing.tokenPriceUsdPerMillion) / 1e6;
+}
+
+/** The result's masked identity block, when any identity was stamped. */
+export function maskedIdentity(
+  sources: ImportSource[],
+  identity: IdentityBySource | undefined,
+  email: string | undefined,
+): { identity?: Partial<Record<ImportSource, Record<string, string>>> } {
+  const who: IdentityBySource = {};
+  for (const source of sources) {
+    const attrs = identityFor(source, identity, email);
+    if (Object.keys(attrs).length) who[source] = attrs;
+  }
+  const masked = maskIdentity(who);
+  return Object.keys(masked).length ? { identity: masked } : {};
 }
 
 export const contentOrDefault = (c: Partial<ContentBySource> | undefined): ContentBySource => ({
