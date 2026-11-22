@@ -118,6 +118,19 @@ exit 0 means the requested checks completed. Funding is checked before client
 configuration. No credits or seats are purchased. Capture follows the saved choice;
 repository observation remains a separate setup option (enabled by project join).
 
+With repository observation enabled, Connect reports the canonical URL of a
+GitHub checkout when its origin is an unambiguous HTTPS or SSH clone URL.
+Codex history imports can use the origin and parent ID from the rollout
+header. To preview just the repository metadata for previously recorded
+sessions, run `codetelemetry-connect repository-metadata <rollout files>`.
+To deliver the displayed observations to your account, supply its
+`CODETELEMETRY_INGEST_KEY` and append `--send`. This command reads only the
+first record of each selected file and sends no prompts, calls or usage.
+If Codex has retained the Git origin in its SQLite thread database, preview
+selected thread IDs with `repository-metadata --state <database> <thread IDs>`.
+This mode needs Node's built-in SQLite module and performs read-only lookups.
+
+
 Credentials are private version-1 JSON files under
 `$CODETELEMETRY_CONTEXT_HOME/<name>.json`, defaulting to
 `$XDG_CONFIG_HOME/codetelemetry/workspaces` or

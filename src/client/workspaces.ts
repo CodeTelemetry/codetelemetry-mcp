@@ -303,6 +303,8 @@ function upgradeLegacyCodexObserver(codexHome: string): void {
   // Published 0.3.7–0.3.14 / Connect 0.1.5 and the equivalent source-mode
   // template. Only the embedded nonsecret config path varies per installation.
   const recognized = new Set([
+    "a4265abbe2ab5f2f8919b330a60c047226b708f6a42af34738f31f75004b9db3",
+    "92297bee16fd6a4111339d96aa7adc3b2d0ee5d9def9337470f468758b527eae",
     "69dd5ad120636379875fc411bcaaa096defe475944d24a6e899dc9796472ab2d",
     "65eaa30f6c565b0298137986bbe4e94d0435f8fedc2574fa284e7979a5fa9ef4",
   ]);

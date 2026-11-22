@@ -217,6 +217,8 @@ function stableResource(session: ImportedSession, email: string | undefined): Im
     "ingest.source": "history-import",
     "import.source": session.source,
     "import.version": IMPORT_VERSION,
+    ...(session.repositoryUrl ? { "vcs.repository.url.full": session.repositoryUrl } : {}),
+    ...(session.parentThreadId ? { "codex.parent_thread_id": session.parentThreadId } : {}),
     ...(session.cwd ? { "project.path": session.cwd } : {}),
     ...(email ? { "user.email": email } : {}),
   };

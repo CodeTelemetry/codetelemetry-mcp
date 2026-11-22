@@ -80,6 +80,8 @@ export type ImportedSession = {
   /** `${bytes}:${mtimeMs}` over all files — detects a session that grew. */
   fileSig: string;
   cwd: string | null;
+  repositoryUrl?: string;
+  parentThreadId?: string;
   startMs: number;
   endMs: number;
   prompts: ImportedPrompt[];
