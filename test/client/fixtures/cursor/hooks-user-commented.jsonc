@@ -1,0 +1,10 @@
+{
+  // synthetic fixture: Cursor accepts comments and trailing commas here
+  "version": 1,
+  "hooks": {
+    /* the user's own hook */
+    "stop": [
+      { "command": "/opt/fixture/bin/notify.sh" }, // keep
+    ],
+  },
+}

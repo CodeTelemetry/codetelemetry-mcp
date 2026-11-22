@@ -3,10 +3,10 @@
 This repository owns public Connect and MCP clients, their installation and
 configuration, local collection, privacy controls, delivery and npm releases.
 
-- Keep Kiro event interpretation in the private service: canonical event mapping,
-  call/result interpretation, credit aggregation, completion policy and analytics
-  are not public client responsibilities. The client may retain bounded source
-  context and validate allowlisted fields to protect privacy and transport.
+- Keep Kiro and Cursor event interpretation in the private service: canonical event
+  mapping, call/result interpretation, credit and token aggregation, completion
+  policy and analytics are not public client responsibilities. The client may retain
+  bounded source context and validate allowlisted fields to protect privacy and transport.
 - Never copy private repository source or Git history here. Authentication server
   implementations, dispatch policy, production acceptance credentials, operational
   fixtures and backend analytics stay private. Use synthetic fixtures in client
@@ -20,7 +20,13 @@ configuration, local collection, privacy controls, delivery and npm releases.
   and package audits when changing shipped files. Do not add a private service
   implementation to an allowlist merely to make the audit pass.
 
+- Code that runs on a customer's machine is injectable and fails open. Tests pass
+  their own home directory, clock, fetch and service-manager runner; none may
+  reach the real `~/.cursor`, `~/.claude`, `~/.codex` or `~/.kiro`, or call
+  `systemctl` or `launchctl`. A hook that runs inside an editor is bounded, makes
+  no network call and never blocks the editor.
+
 Use Node 24 and the committed npm lockfile. Validate client changes with typecheck,
-unit and protocol tests, packaged MCP tests, installed Connect/Kiro smoke and the
-source/artifact audits. npm publication belongs to this repository's release
+unit and protocol tests, packaged MCP tests, installed Connect/Kiro/Cursor smoke and
+the source/artifact audits. npm publication belongs to this repository's release
 workflow and remains a separate step from preparing a pull request.

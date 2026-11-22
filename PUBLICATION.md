@@ -8,7 +8,7 @@ The npm artifact is allowlisted independently of the repository. It may contain
 only:
 
 - compiled MCP transport and tool-registry modules;
-- local onboarding/configuration, privacy controls, history import and bounded Kiro collection;
+- local onboarding/configuration, privacy controls, history import and bounded Kiro and Cursor collection;
 - CodeTelemetry HTTP clients, protocol contracts and plan input normalization;
 - bounded local instruction/skill and project-task discovery for Grader draft setup;
 - `package.json`, `README.md`, `LICENSE`, and `tool-manifest.json`.
@@ -29,11 +29,23 @@ all four with requests that the service rejects before creating a job or
 changing a draft. It requires the specific validation/not-found response;
 a generic missing-route 404 or an unconfigured runtime blocks publication.
 
+The Cursor hooks collector sends `cursor-hooks-source-v1` envelopes and needs the
+ingest service to accept that format. Deploy that support before publishing a
+client that offers `--client cursor`: `login --client cursor` asks the service
+first and installs nothing when the format is not served, and an installed
+collector that loses it keeps its records and retries. The collector is installed
+by the Connect command only; the MCP tools return that command instead of
+installing hooks or a service on the user's behalf.
+
 ## Release preparation
 
 1. Update MCP `package.json` and `src/version.ts` together, and the standalone
    Connect version in `packages/connect/package.json`. Both versions must be
-   unpublished and ahead of their package’s current `latest`.
+   unpublished and ahead of their package’s current `latest`. The same two
+   versions are pinned in `package-lock.json`, `WORKSPACE_MCP_PACKAGE`
+   (`src/client/workspaces.ts`), `CONNECT_VERSION` (`src/client/cli.ts`),
+   `tool-manifest.json` and the install commands of both READMEs; the tests fail
+   when one of them is left behind.
 2. If the tool inventory changed, run `npm run manifest:write` and review it.
 3. Open a pull request and wait for CI to pass.
 4. Add `CODETELEMETRY_SMOKE_INGEST_KEY` as a repository secret. Publishing

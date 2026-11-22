@@ -17,6 +17,7 @@ depend on the MCP sizing release:
 ```bash
 npx -y @codetelemetry/connect login
 # Add --codex when configuring OpenAI Codex.
+# Add --client cursor for Cursor: see "Cursor" below.
 ```
 
 ## Install (Claude Code)
@@ -187,6 +188,109 @@ approval route before clients use new-organization creation. Older deployments
 refuse the versioned request rather than creating a personal key. Existing-org
 contexts use the established scope-v1 device flow.
 
+## Cursor
+
+Cursor has no OpenTelemetry settings to write. Connect installs six hooks and a
+background collector instead:
+
+```sh
+npx -y @codetelemetry/connect login --client cursor
+# With a key you already hold: npx -y @codetelemetry/connect <cot_key> --client cursor
+```
+
+Run it on the machine where the workspace lives. With Remote-SSH, WSL or a Dev
+Container that is the remote host, the WSL distribution or the container, not your
+laptop: Cursor reads `~/.cursor/hooks.json` and runs hooks there. It requires
+Node.js 24 or newer. Verified on Linux. macOS is in preview. Windows is not
+supported: the command refuses to install there.
+
+The command checks the machine before it requests a key: the platform, the Node.js
+version, a per-user service manager, the paths it would use, and whether
+`~/.cursor/hooks.json` can take the entries. A refusal names its reason and writes
+nothing. After approval it asks the ingest endpoint whether it accepts Cursor
+records, and stores nothing when the answer is no. Then, in this order, it writes
+its settings, installs the hook program, starts the collector (a systemd user
+service on Linux, a LaunchAgent on macOS) and adds one entry under each of six
+events in `~/.cursor/hooks.json`. Your other hooks are kept, and the file is copied
+once to `hooks.json.codetelemetry-backup` before the first edit. An install that
+fails part-way removes what it wrote, or puts the previous installation back. The
+command then sends a test event, waits for it to arrive, and prints what it
+installed, where, the capture mode and how to remove it. The Cursor IDE picks the hooks up at once; restart any running
+`cursor-agent` session.
+
+| Option | What is sent |
+| --- | --- |
+| none (default) | Metadata only: prompt length, tool names, durations, exit codes, sizes, models and token counts. A session then shows no repository and no developer. |
+| `--enrich` | Also prompt text, the input of shell, read, write, search and task calls (commands, file paths, patterns and their options) and the workspace path, which gives a session its repository. Credential scrubbing is best effort: text in a known credential shape (key blocks, bearer and authorization values, assignments to secret-named variables, common token formats, passwords in URLs) is removed from prompts, and a tool input that holds such text, or a command that passes a password option, is withheld whole. A secret in a shape the patterns do not know is sent as typed, so leave `--enrich` off where prompts or commands may carry secrets. |
+| `--identity` | Also your Cursor account email, which puts your sessions under your name. |
+
+File contents, command output, model replies and reasoning are never collected.
+`--no-enrich` and `--no-identity` turn an option off; with neither flag the current
+choice is kept. Records captured while an option was on and not yet sent are
+reduced before they are sent. Headless runs (`cursor-agent -p`) report tools and
+durations, but no prompts and no tokens. Cursor's cloud and background agents do
+not run user-level hooks, so they report nothing.
+
+The hook runs inside the editor, so it is small and cannot block it: it makes no
+network call, gives up after 1.5 seconds and always exits 0. It appends one record
+to a local spool; the collector sends the spool in batches, at most four requests
+a minute, so a turn reaches the dashboard about 15 to 35 seconds after it ends.
+Unsent records wait in the spool for up to 14 days. The spool holds at most
+128 MiB; while it is full, new events are not recorded, and `cursor status` shows
+how many were dropped. A record older than 14 days is deleted unsent and counted
+as expired, also while the service is refusing records; only the one batch being
+retried is kept longer: after six days without an answer its records are sent again
+as a new batch. A collector that fails to
+start is started again after about a minute, not at once. On Linux a user service
+stops at logout unless lingering is enabled for your user; records wait until it
+runs again. A home directory on a network file system is not
+supported, and Connect does not detect one.
+
+| Path | Holds |
+| --- | --- |
+| `~/.config/codetelemetry/cursor-hooks-v1.json` (and `.previous`) | settings and the ingest key in plain text, mode 0600 |
+| `~/.local/share/codetelemetry/cursor-hooks-v1/` | `hook.sh`, `hook.cjs`, `collector.sh` and the collector's own copy of Connect |
+| `~/.local/state/codetelemetry/cursor-hooks-v1/` | the spool, the batch being sent, refused batches and collector state; with `--enrich` these hold prompt text and commands |
+| `~/.config/systemd/user/codetelemetry-cursor-hooks.service` or `~/Library/LaunchAgents/com.codetelemetry.cursor-hooks.plist` | the collector service |
+| `~/.cursor/hooks.json` | six CodeTelemetry entries beside your own |
+| `~/.cursor/hooks.json.codetelemetry-backup` | your file as it was before the first edit |
+
+```sh
+npx -y @codetelemetry/connect cursor status             # collector, hooks and delivery; --json for a script
+npx -y @codetelemetry/connect cursor disable            # remove the hook entries and stop the service
+npx -y @codetelemetry/connect cursor enable             # start again with the stored key and choices
+npx -y @codetelemetry/connect cursor uninstall          # remove hooks, hook program, launchers and service
+npx -y @codetelemetry/connect cursor uninstall --purge  # also delete the settings, the key and unsent records
+npx -y @codetelemetry/connect cursor retry-rejected     # send batches the service refused once more
+```
+
+`cursor uninstall` keeps the settings, the runtime copy and unsent records, and
+lists every path it left with what each holds. `--purge` deletes them too. It
+never follows a link out of its own directories, and it leaves `hooks.json` alone
+apart from removing its own entries.
+
+- **Proxy or private certificate authority.** `login` records `HTTPS_PROXY`,
+  `NO_PROXY` and `NODE_EXTRA_CA_CERTS` from its environment for the collector and
+  shows a recorded proxy without its credentials. A later login without those
+  variables keeps them; `--no-proxy-settings` forgets them. The collector uses
+  the recorded proxy settings only: proxy variables it inherits from the service
+  manager are ignored. The login command's own requests use a proxy only when
+  `NODE_USE_ENV_PROXY=1` is exported.
+- **No per-user service manager** (most containers, WSL without systemd). `login
+  --client cursor --hooks-only` installs everything except the service. Run the
+  launcher it prints, `/bin/sh ~/.local/share/codetelemetry/cursor-hooks-v1/collector.sh`,
+  under the host's own supervisor or in a terminal that stays open.
+- **A `hooks.json` Connect will not rewrite** (a symbolic link, or a file with
+  comments or trailing commas). The refusal prints the six entries;
+  `--hooks-manual` installs everything except that edit.
+- **A Node.js upgrade removed the interpreter.** Hooks keep working through
+  `PATH` and tell the collector where Node.js is now. `cursor status` then reports
+  that the recorded path changed; run `login --client cursor` again to refresh it.
+
+The MCP tools do not install any of this: `onboard` and `write_local_config` with
+`client: "cursor"` return the command above for the user to run, and `status` with
+`client: "cursor"` reads the settings afterwards.
+
 ## Tools
 
 | Tool | What it does |
@@ -199,10 +303,10 @@ contexts use the established scope-v1 device flow.
 | `authenticate` | Start device-code auth; returns a URL + short code for the human to approve. Optional `organizationId` connects one of the user's organizations; optional `workspaceUrl` picks a CodeTelemetry server (codetelemetry.com hosts only). |
 | `auth_status` | Poll the approval; on success captures the key into the session (masked-only to the model). |
 | `get_ingest_key` | Record a pasted key (fast path) or report the authenticated one — masked + hash only. |
-| `write_local_config` | Merge the OTEL config + key into Claude Code's or Codex's config (the default, or an explicit `path` to a `settings.json`/`settings.local.json` in a `.claude` directory or a `config.toml` in a `.codex` directory); preserves + backs up. |
+| `write_local_config` | Merge the OTEL config + key into Claude Code's or Codex's config (the default, or an explicit `path` to a `settings.json`/`settings.local.json` in a `.claude` directory or a `config.toml` in a `.codex` directory); preserves + backs up. Does not set up Cursor: `client: "cursor"` returns the Connect command to run. |
 | `send_test_event` | Fire one OTLP probe log with a unique id. |
 | `verify_telemetry` | Poll the connectivity check until the probe lands. |
-| `onboard` | One-shot: key → config → test → verify, returns a checklist. |
+| `onboard` | One-shot: key → config → test → verify, returns a checklist. Does not set up Cursor: `client: "cursor"` returns the Connect command to run. |
 | `status` | Read-only diagnostics (no secrets). |
 | `get_cost_signal` | Read recent tokens and observed model cost for the caller's own telemetry, with what CodeTelemetry meters for those tokens shown separately. |
 | `search_sessions` | Search the same bounded session index as the UI by prompt/title text, assistant, repo, model, duration, and sort order; returns metadata and match fields, never prompt text. Results are ordered by `lastSeen` (most recently active, not started or finished); `activity: "substantive"` keeps only sessions with observed agent work and counts what it left out. Optional `start` / `end` (Unix seconds) keep sessions last active in that window. |
@@ -213,7 +317,7 @@ contexts use the established scope-v1 device flow.
 | `get_session_performance` | Measure a session timeline's fresh/cache latency, rows, bytes, and query phases without returning content. |
 | `find_similar_session_errors` | Find other personal-scope sessions with matching normalized failure signatures and report query performance. |
 | `estimate_task_size` | T-shirt size a proposed task (free-form text or a Linear-shaped issue) from the caller's own history. |
-| `estimate_plan` | T-shirt size a Claude Code / Codex **plan** (plain text or ordered steps) from the caller's own history. |
+| `estimate_plan` | T-shirt size a coding assistant's **plan** (plain text or ordered steps) from the caller's own history. |
 | `estimate_linear_issue` | T-shirt size an **existing Linear issue** by URL or identifier, resolved through the workspace the user already connected. |
 | `seed_grader_config` | Inspect local agent instructions, selected skills, and project task files; return source text and command-check candidates for the user's requested grading focus. Reads files without running commands or uploading them. |
 | `publish_grader_config` | Publish the reviewed draft as a new policy version using its exact revision. Completes setup through MCP; historical scores remain unchanged. |
@@ -694,13 +798,15 @@ npm run typecheck
 
 `npm test` and `test:protocol` load `test/support/isolateHome.ts`, which
 points `HOME`, `USERPROFILE` and `CODEX_HOME` at a throwaway directory, so a test can
-never rewrite your own `~/.claude/settings.json` or Codex config.
+never rewrite your own `~/.claude/settings.json` or Codex config. The collector
+tests also pass their own home directory, clock, fetch and service-manager runner,
+so none of them reaches `~/.cursor`, `systemctl` or `launchctl`.
 
 ## Client implementation ownership
 
 This public repository owns the local client implementation. `src/client` contains
 configuration, privacy controls, HTTP adapters, history upload, and the bounded
-Kiro collector. The MCP server and Connect CLI share that implementation. Server
+Kiro and Cursor collectors. The MCP server and Connect CLI share that implementation. Server
 authorization, analytics, dispatch policy and production operations are maintained
 separately and are not included in either package.
 
@@ -721,3 +827,12 @@ version 3. Existing canonical pending uploads retain their exact retry bytes.
 
 Collector health version 2 reports local capture and delivery counters. It omits
 call-association counts that are now computed by the service.
+
+The Cursor collector is described under [Cursor](#cursor). It sends bounded,
+sanitized `cursor-hooks-source-v1` records: the hook copies allow-listed fields
+only, and what a record means (token arithmetic, outcomes, model choice) is decided
+by the service. The service must support that format before this collector is
+released. A collector that reaches a service without it keeps its records in the
+spool and retries every 15 minutes; it sets a batch aside only when the service
+refuses that batch for 24 hours, and `cursor retry-rejected` sends set-aside
+batches again.

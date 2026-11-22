@@ -1,0 +1,16 @@
+{
+	"version": 1,
+	"hooks": {
+		"postToolUse": [
+			{
+				"command": "/opt/fixture/bin/after-tool.sh"
+			}
+		],
+		"preToolUse": [
+			{
+				"command": "/opt/fixture/bin/before-tool.sh",
+				"matcher": "Shell"
+			}
+		]
+	}
+}
