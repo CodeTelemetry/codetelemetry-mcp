@@ -1942,7 +1942,7 @@ export const TOOLS: ToolDef[] = [
       "Use this when the user asks what importing their EXISTING local Claude Code or Codex history would cost, or how much history they have. " +
       "Needs no key and sends nothing: it reads ~/.claude/projects and ~/.codex/sessions on this machine and returns sessions and tokens per source, per UTC month and per day, the oldest and newest session, and the last-30-day pace, " +
       "priced with CodeTelemetry's public price list when it can be read. Imported tokens are billed like live usage: this month's included seat tokens first, then the per-million price from prepaid credit. " +
-      "Claude Code deletes local transcripts cleanupPeriodDays (default 30) after their last activity, so older uncaptured Claude sessions are gone for good; goneForGood says from when. " +
+      "Claude Code deletes local transcripts cleanupPeriodDays (default 30) after their last activity, so an older Claude session survives only if it was captured live or its transcript is still on disk; goneForGood says from when. " +
       "Sessions already captured live are counted here but skipped by an import. To import, call import_history (dry run first).",
     inputSchema: obj({
       source: { type: "string", enum: ["claude-code", "codex", "all"], description: "Which history to read (default all)." },
@@ -1983,7 +1983,7 @@ export const TOOLS: ToolDef[] = [
           ...(days !== null ? {
             claudeCleanupPeriodDays: days,
             claudeCutoffIso: new Date(claudeRetentionCutoffMs(now, days)).toISOString(),
-            claude: `Claude Code deletes transcripts ${days} day(s) after their last activity, so Claude Code sessions before the cutoff that CodeTelemetry did not capture are gone for good.`,
+            claude: `Claude Code deletes transcripts ${days} day(s) after their last activity, so a Claude Code session from before the cutoff survives only if CodeTelemetry captured it live or its transcript is still on disk (those are counted here).`,
           } : {}),
           codex: "Codex keeps its rollouts until they are removed.",
           neverRecovered: `An import never recovers ${IMPORT_NEVER_RECOVERS}.`,

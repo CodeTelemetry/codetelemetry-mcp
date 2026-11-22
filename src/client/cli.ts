@@ -163,7 +163,8 @@ estimate options:
   source, month and day, and prices them with the public price list
   (GET /api/pricing, the only request it makes). Claude Code deletes local
   transcripts cleanupPeriodDays (default 30) after their last activity; the
-  estimate says which uncaptured sessions are already gone for good.
+  estimate prints the cutoff before which a session survives only if it was
+  captured live or its transcript is still on disk.
   --source claude-code|codex|all   Which history to read (default: all)
   --since <Nd|date>      Window start (default: 364d, the whole retained year)
   --api-base <url>       Where the price list is read (default: https://codetelemetry.com)
@@ -446,7 +447,7 @@ function estimateLines(
   if (e.claudeCleanupPeriodDays !== null) {
     const n = e.claudeCleanupPeriodDays;
     lines.push(`Gone for good: Claude Code deletes transcripts ${n} day(s) after their last activity (cleanupPeriodDays, default 30), ` +
-      `so Claude Code sessions before ${dateOf(claudeRetentionCutoffMs(o.now, n))} that CodeTelemetry did not capture are gone for good. ` +
+      `so a Claude Code session from before ${dateOf(claudeRetentionCutoffMs(o.now, n))} survives only if CodeTelemetry captured it live or its transcript is still on disk (those are counted above). ` +
       "Codex keeps its rollouts until you remove them.");
   }
   lines.push(`An import never recovers ${IMPORT_NEVER_RECOVERS}; those exist only in live telemetry.`);

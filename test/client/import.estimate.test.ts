@@ -248,7 +248,7 @@ test("cli estimate: prices the local history, says what is gone for good, and en
   assert.match(text, /At this pace: about \$50\.00\/month for one seat/);
   const cutoff = new Date(claudeRetentionCutoffMs(now, 21)).toISOString().slice(0, 10);
   assert.ok(text.includes(`Claude Code deletes transcripts 21 day(s) after their last activity`), text);
-  assert.ok(text.includes(`sessions before ${cutoff} that CodeTelemetry did not capture are gone for good`), text);
+  assert.ok(text.includes(`session from before ${cutoff} survives only if CodeTelemetry captured it live or its transcript is still on disk`), text);
   assert.match(text, /never recovers per-request latency/);
   assert.match(text.trimEnd(), /Next: codetelemetry-connect import --dry-run --since 364d$/);
 
