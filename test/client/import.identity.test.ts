@@ -137,7 +137,7 @@ test("identity resolution follows the source and the opt-out; masking hides emai
   assert.deepEqual(Object.keys(resolveImportIdentity({ source: "all", ...both })).sort(), ["claude-code", "codex"]);
   assert.deepEqual(Object.keys(resolveImportIdentity({ source: "codex", ...both })), ["codex"]);
   assert.deepEqual(resolveImportIdentity({ source: "all", disabled: true, ...both }), {});
-  assert.equal(maskEmail("elliot@gmail.com"), "e***@g***.com");
+  assert.equal(maskEmail("dev@example.com"), "d***@e***.com");
   assert.equal(maskEmail("a@b.co.uk"), "a***@b***.uk");
   const masked = maskIdentity(resolveImportIdentity({ source: "all", ...both }));
   assert.equal(masked["claude-code"]!["user.email"], "d***@e***.org");
