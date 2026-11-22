@@ -27,6 +27,8 @@ export const PUBLIC_MODULES = [
   "src/client/otlp",
   "src/client/piConfig",
   "src/client/plan",
+  "src/client/publicSessions",
+  "src/client/publicSessionsCommand",
   "src/client/repositoryHook",
   "src/client/repositoryOrigin",
   "src/client/rolloutRepository",

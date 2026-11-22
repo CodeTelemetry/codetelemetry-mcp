@@ -28,6 +28,10 @@ export type Endpoints = {
   /** Size an existing Linear issue resolved through the tenant's own connected
    *  workspace (ELL-44). */
   agentLinearIssueSizeUrl: string;
+  /** Owner-published public sessions (ingest-key-authed). */
+  agentPublishSessionUrl: string;
+  agentUnpublishSessionUrl: string;
+  agentPublishedSessionsUrl: string;
   /** Read a bounded, materialized interpretation of one personal coding session. */
   agentInterpretSessionUrl: string;
   /** Read one personal coding session's recorded events (ELL-272). */
@@ -81,6 +85,9 @@ export function resolveEndpoints(overrides: Partial<{ apiBase: string; ingestEnd
     agentSessionSearchUrl: `${apiBase}/api/agent/session-search`,
     agentTaskSizeUrl: `${apiBase}/api/agent/task-size`,
     agentLinearIssueSizeUrl: `${apiBase}/api/agent/linear-issue-size`,
+    agentPublishSessionUrl: `${apiBase}/api/agent/publish-session`,
+    agentUnpublishSessionUrl: `${apiBase}/api/agent/unpublish-session`,
+    agentPublishedSessionsUrl: `${apiBase}/api/agent/published-sessions`,
     agentInterpretSessionUrl: `${apiBase}/api/agent/interpret-session`,
     agentReadSessionEventsUrl: `${apiBase}/api/agent/read-session-events`,
     agentCompareSessionsUrl: `${apiBase}/api/agent/compare-sessions`,

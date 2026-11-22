@@ -1178,6 +1178,20 @@ export async function readSessionEvents(opts: {
   };
 }
 
+/** Publish, unpublish or list YOUR public sessions (POST /api/agent/
+ * publish-session, unpublish-session, published-sessions). Key-authenticated;
+ * the anonymous reads of a published session are in publicSessions.ts. */
+export async function sessionPublicationRequest(opts: {
+  key: string;
+  url: string;
+  body: Record<string, unknown>;
+  fetchImpl?: FetchLike;
+  timeoutMs?: number;
+}): Promise<{ ok: boolean; value: Record<string, unknown> | null; httpStatus: number; error: string | null; message: string | null }> {
+  const result = await postAgent<Record<string, unknown>>({ ...opts, timeoutMs: opts.timeoutMs ?? 10_000 });
+  return { ok: result.ok, value: result.value ?? null, httpStatus: result.httpStatus, error: result.error, message: result.message };
+}
+
 export type GitHubGateResult = {
   ok: boolean;
   /** The gate exactly as its settings page shows it; null on failure. */

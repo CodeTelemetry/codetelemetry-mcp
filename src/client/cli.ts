@@ -15,6 +15,7 @@ import { importWorkspaceHistory } from "./workspaceImport.ts";
 import { bootstrapWorkspace, type BootstrapOptions } from "./bootstrap.ts";
 import { listWorkspaces, loadWorkspace, bindWorkspace, bindingOf, findWorkspaceBinding, sameWorkspace, writeCodexWorkspaceProfile } from "./workspaces.ts";
 import { runKiroCommand } from "./kiro/command.ts";
+import { PUBLIC_SESSIONS_HELP, runPublicSessionsCommand } from "./publicSessionsCommand.ts";
 import { spawn } from "node:child_process";
 import { onboard, type OnboardClient } from "./onboard.ts";
 import { resolveEndpoints, type SettingsScope } from "./config.ts";
@@ -93,6 +94,8 @@ Usage:
                          Resume with just bootstrap <name>. --plan supplies Grader checks/features.
                          New setups capture prompts/tool content; --no-enrich opts out.
   codetelemetry-connect login [options]       Authenticate via device code, then do the above
+  codetelemetry-connect public-sessions list|show <id>|events <id>
+                         Read public sample and published sessions; no sign-in.
   codetelemetry-connect doctor [options]      Re-test the already-configured key
   codetelemetry-connect print-config          Print the config block (no key)
   codetelemetry-connect host-metrics [opts]   Write the OpenTelemetry Collector
@@ -157,6 +160,8 @@ host-metrics options:
   --processes <a,b,c>    Executable names counted as agentd process health
   --interfaces           Keep per-interface network breakdown (off by default)
   --mounts               Keep per-mount filesystem breakdown (off by default)
+
+${PUBLIC_SESSIONS_HELP}
 
 estimate options:
   Reads the same local history as import, counts sessions and tokens per
@@ -702,6 +707,7 @@ export async function run(argv: string[]): Promise<number> {
     return result.ok?0:2;
   }
   if (cmd === "kiro") return runKiroCommand(_.slice(1), flags, out);
+  if (cmd === "public-sessions") return runPublicSessionsCommand(_.slice(1), flags, out);
 
   const picked = pickClient(flags);
   if (!isOnboardClient(picked)) {

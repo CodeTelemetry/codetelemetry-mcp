@@ -52,6 +52,7 @@ export {
   estimateLinearIssue,
   interpretSession,
   readSessionEvents,
+  sessionPublicationRequest,
   compareSessions,
   planNextSession,
   getHostHealth,
@@ -197,3 +198,4 @@ export { graderConfigRequest } from "./agent.ts";
 export { loadWorkspace, saveWorkspace, listWorkspaces, bindWorkspace, findWorkspaceBinding, type WorkspaceContext, type WorkspaceBinding } from "./workspaces.ts";
 
 export { bootstrapWorkspace, type BootstrapOptions } from "./bootstrap.ts";
+export { getPublicSession, listPublicSessions, readPublicSessionEvents, validPublicSessionId, type PublicReadResult } from "./publicSessions.ts";

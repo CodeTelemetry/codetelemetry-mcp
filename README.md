@@ -226,9 +226,29 @@ contexts use the established scope-v1 device flow.
 | `update_grader_config` | Add, update, or remove selected draft checks while preserving others. Records the user's requested instruction features and rejects stale revisions. Use publish_grader_config with the returned revision to apply it to future scoring. |
 | `get_github_pr_gate` | Read the workspace's GitHub PR gate as its settings page shows it: the policy, trusted repositories, the GitHub Actions workflow file to commit, the check to require, outstanding steps, and recent decisions. |
 | `configure_github_pr_gate` | Set up or change the GitHub PR gate: trust repositories (`owner/repo` or `owner/*`), set the policy, enable it. Once the gate is on, a change that loosens it is refused (`requires_dashboard`) and the user makes it on the settings page. No GitHub token is involved: the workflow authenticates with GitHub's own OIDC token. |
+| `list_public_sessions` | List CodeTelemetry's public sample sessions. Needs no sign-in or key. |
+| `get_public_session` | Summary of one public session: a sample, or a session its owner published (`pub_…` id). Needs no sign-in or key, and never sends a held key. |
+| `read_public_session_events` | A bounded page (max 50) of a public session's recorded events. Samples page by `position`/`limit`/`kinds`; published sessions take `read_session_events` paging, after the owner's privacy filter. Needs no sign-in or key. |
+| `publish_session` | Make one of your sessions readable by anyone holding the returned `pub_…` id. Requires `acknowledgePublic: true`; idempotent; at most 20 public sessions per owner. |
+| `unpublish_session` | Take one of your public sessions back; its link stops working on the next read. |
+| `list_published_sessions` | List the sessions you published, with their ids and links. |
 
 Typical agent flow: `authenticate` → (human approves) → `auth_status` →
 `onboard`. Or, if the user pastes a key: `onboard { key }`.
+
+Public sessions need no account. From a terminal:
+
+```bash
+npx -y @codetelemetry/connect public-sessions list
+```
+
+```bash
+npx -y @codetelemetry/connect public-sessions events s-4f9c --limit 10
+```
+
+A `pub_…` id an owner shared works in place of a sample id. Without any client,
+anonymous MCP hosts can connect to `https://codetelemetry.com/public-mcp` once it
+is enabled; it serves the same three read tools.
 
 GitHub PR gate flow, run from inside the repository to gate:
 `configure_github_pr_gate { addRepositories: ["owner/repo"], enabled: true }` →
