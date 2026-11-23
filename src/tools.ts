@@ -949,7 +949,7 @@ export const TOOLS: ToolDef[] = [
       });
       return {
         ok: true, path: r.path, wrote: r.wrote, backupPath: r.backupPath, created: r.created,
-        ...(client === "pi" ? { note: PI_EXTENSION_HINT } : {}),
+        ...(client === "pi" ? { note: PI_EXTENSION_HINT } : r.notice ? { note: r.notice } : {}),
       };
     },
   },

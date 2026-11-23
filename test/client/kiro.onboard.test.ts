@@ -7,6 +7,8 @@ import { run } from "../../src/client/cli.ts";
 import { onboard } from "../../src/client/onboard.ts";
 import { runKiroCommand } from "../../src/client/kiro/command.ts";
 import { enableKiroService, disableKiroService, uninstallKiroService } from "../../src/client/kiro/service.ts";
+import { KIRO_CAPTURE_CHANGED, readKiroConfig } from "../../src/client/kiro/config.ts";
+import { KiroCollector } from "../../src/client/kiro/collector.ts";
 const key="cot_synthetic_onboard_test_00000000000";
 
 test("Kiro onboarding stays outside vendor config, metadata-only, with masked results and bounded health",async()=>{
@@ -100,5 +102,59 @@ test("the config writer treats capture as three states for every caller",async()
   // A stored choice that turned on only one kind of content is kept as it is.
   const config=JSON.parse(await fs.readFile(file,"utf8"));config.content={prompts:true,toolDetails:false};await fs.writeFile(file,JSON.stringify(config));
   await write();assert.deepEqual(await content(),{prompts:true,toolDetails:false});
+ }finally{await fs.rm(root,{recursive:true,force:true});}
+});
+
+test("a login that changes capture says so and records the replaced choice; an unchanged login does neither",async()=>{
+ const home=await fs.mkdtemp(path.join(os.tmpdir(),"kiro-capture-change-")),file=path.join(home,"config.json"),source=path.join(home,"runtime-source");
+ try{
+  await fs.mkdir(source,{recursive:true});
+  await fs.writeFile(path.join(source,"bin.ts"),'import "../../src/client/cli.ts";');await fs.writeFile(path.join(source,"cli.ts"),"export {};\n");
+  const kiro={home,platform:"linux" as const,runtimeSource:source,node:"/usr/local/bin/node",execute:()=>""};
+  const lines:string[]=[],write=process.stdout.write;
+  const login=async(...flags:string[])=>{
+   lines.length=0;process.stdout.write=((chunk:unknown)=>{lines.push(String(chunk));return true;}) as typeof process.stdout.write;
+   try{return await run([key,"--client","kiro","--settings",file,"--endpoint","https://ingest.invalid","--no-test","--no-verify",...flags],{kiro});}finally{process.stdout.write=write;}
+  };
+  const told=()=>lines.some(line=>line.includes(KIRO_CAPTURE_CHANGED));
+  const on={prompts:true,toolDetails:true},off={prompts:false,toolDetails:false};
+  assert.equal(await login(),0);assert.equal(told(),false);assert.equal(readKiroConfig(file).supersededContent,undefined);
+  assert.equal(await login("--enrich"),0);assert.equal(told(),true);assert.deepEqual(readKiroConfig(file).supersededContent,off);
+  // Nothing changes: no message, and the recorded change stays until the collector has acted on it.
+  assert.equal(await login("--enrich"),0);assert.equal(told(),false);assert.deepEqual(readKiroConfig(file).supersededContent,off);
+  assert.equal(await login(),0);assert.equal(told(),false);assert.deepEqual(readKiroConfig(file).supersededContent,off);
+  assert.equal(await login("--no-enrich"),0);assert.equal(told(),true);assert.deepEqual(readKiroConfig(file).supersededContent,on);
+  assert.deepEqual(readKiroConfig(file).content,off);
+  assert(!lines.join("\n").includes(key));
+  const result=await onboard({client:"kiro",key,settings:{path:file,enrich:true},sendTest:false,verify:false,activateCollector:false,endpoints:{ingestEndpoint:"https://ingest.invalid"}});
+  assert.equal(result.steps.find(step=>step.name==="capture_changed")?.detail,KIRO_CAPTURE_CHANGED);
+  const broken=JSON.parse(await fs.readFile(file,"utf8"));broken.supersededContent={prompts:"yes"};await fs.writeFile(file,JSON.stringify(broken));
+  assert.throws(()=>readKiroConfig(file),/invalid Kiro collector config fields/);
+ }finally{await fs.rm(home,{recursive:true,force:true});}
+});
+
+test("turning capture off at login lets the collector start, discard the unsent upload and send its records without content",async()=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),"kiro-capture-restart-")),file=path.join(root,"config.json");
+ const sourceRoot=path.join(root,"source"),stateDir=path.join(root,"state"),id="sess_0d9782e1-c28a-4107-ac98-5033e20ee658",session=path.join(sourceRoot,"0000000000000000",id);
+ try{
+  const write=(enrich?:boolean)=>onboard({client:"kiro",key,settings:{path:file,enrich},sendTest:false,verify:false,activateCollector:false,endpoints:{ingestEndpoint:"https://ingest.invalid"}});
+  await write(true);
+  await fs.mkdir(session,{recursive:true});
+  await fs.writeFile(path.join(session,"session.json"),JSON.stringify({schemaVersion:"1.0.0",dataModelVersion:1,id}));
+  await fs.writeFile(path.join(session,"messages.jsonl"),JSON.stringify({id:"before-turn-off",timestamp:"2026-10-19T18:28:13.699Z",payload:{type:"user",content:"synthetic prompt text"}})+"\n");
+  // The collector is built from the stored config the way `kiro collect` builds it.
+  const bodies:string[]=[];let outcome:"retry"|"ok"="retry";
+  const collector=()=>{const config=readKiroConfig(file);return new KiroCollector({sourceRoot,stateDir,destinationHash:"a".repeat(64),policy:config.content,supersededPolicy:config.supersededContent,
+   bootstrap:"start",post:async body=>{bodies.push(body);return outcome;}});};
+  const first=collector();
+  try{await first.open();await first.tick();await first.tick();}finally{await first.close();}
+  assert.match(JSON.parse(await fs.readFile(path.join(stateDir,"pending.json"),"utf8")).body,/synthetic prompt text/);
+  await write(false);bodies.length=0;outcome="ok";
+  const next=collector();
+  try{
+   await next.open();await next.tick();await next.tick();
+   assert.equal(bodies.length,1);assert.match(bodies[0],/before-turn-off/);assert.doesNotMatch(bodies[0],/synthetic prompt text/);
+   assert.equal(next.snapshot().pending,false);
+  }finally{await next.close();}
  }finally{await fs.rm(root,{recursive:true,force:true});}
 });

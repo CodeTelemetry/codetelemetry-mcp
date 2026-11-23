@@ -832,14 +832,21 @@ such as `psql -p 5432` or `zip -p` are withheld too; the call is still reported
 with its tool name and result. A secret in a shape the patterns do not know is
 sent as typed, so leave `--enrich` off where prompts or commands may carry secrets.
 
-`login --client kiro --no-enrich` turns capture off again for records read from
-then on; with neither flag the stored choice is kept. Kiro does not rewrite an
-upload that was already prepared: one unsent upload is bound to the capture choice
-it was prepared under, and after a change in either direction the collector stops
-with `invalid Kiro retry spool contract` instead of sending it. To recover, either
-restore the earlier choice until `kiro status` shows nothing pending, or remove
-`pending.json` from the collector's state directory; source offsets advance only
-on acknowledgement, so those records are then read again under the new choice.
+`login --client kiro --no-enrich` turns capture off again; with neither flag the
+stored choice is kept. A login that changes the choice, in either direction, says
+so and records the choice it replaced. Kiro does not rewrite an upload that was
+already prepared. When the collector next starts, it discards the one unsent
+upload prepared under the replaced choice and reads those records again under the
+new one; source offsets advance only on acknowledgement, so no record is lost and
+no manual step is needed. An upload that was being sent while the choice changed
+may already have reached the service; its records are then sent a second time,
+in the new form.
+
+An unsent upload whose capture choice differs from the current one for any other
+reason, such as a hand-edited configuration, is still refused: the collector
+stops with `invalid Kiro retry spool contract` and sends nothing. Removing
+`pending.json` from the collector's state directory makes it read those records
+again under the current choice.
 
 The Kiro collector sends bounded, sanitized source records. Event interpretation,
 call/result association, usage aggregation and analytics run in the service.

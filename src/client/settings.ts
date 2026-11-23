@@ -95,6 +95,8 @@ export type WriteResult = {
   wrote: string[];
   backupPath: string | null;
   created: boolean;
+  /** Something the user should be told about this write, in plain words. */
+  notice?: string;
 };
 
 export type WriteOptions = {

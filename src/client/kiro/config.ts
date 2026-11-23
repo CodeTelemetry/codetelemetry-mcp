@@ -6,7 +6,12 @@ import type { WriteResult } from "../settings.ts";
 import type { ContentPolicy } from "../import/model.ts";
 
 export type KiroConfig = {kind: "codetelemetry-kiro-v3"; version: 1; enabled: boolean; key: string;
-  ingestEndpoint: string; sourceRoot: string; stateDir: string; content: ContentPolicy; backfill: boolean};
+  ingestEndpoint: string; sourceRoot: string; stateDir: string; content: ContentPolicy; backfill: boolean;
+  /** The capture choice the latest change replaced. An upload prepared under
+   * it and never acknowledged is discarded when the collector next starts, and
+   * its records are read again under `content`. */
+  supersededContent?: ContentPolicy};
+export const KIRO_CAPTURE_CHANGED = "Kiro capture setting changed: records that were read but not yet sent will be read again and sent under the new setting.";
 export function kiroPaths(home = os.homedir()) {
   return {config: path.join(home, ".config", "codetelemetry", "kiro-v3.json"),
     sourceRoot: path.join(home, ".kiro", "sessions"), stateDir: path.join(home, ".local", "state", "codetelemetry", "kiro-v3"),
@@ -27,7 +32,8 @@ export function readKiroConfig(file: string): KiroConfig {
   if (typeof config.enabled !== "boolean" || typeof config.backfill !== "boolean" ||
     typeof config.sourceRoot !== "string" || !path.isAbsolute(config.sourceRoot) || config.sourceRoot.length > 4096 ||
     typeof config.stateDir !== "string" || !path.isAbsolute(config.stateDir) || config.stateDir.length > 4096 ||
-    typeof config.content?.prompts !== "boolean" || typeof config.content.toolDetails !== "boolean") throw new Error("invalid Kiro collector config fields");
+    typeof config.content?.prompts !== "boolean" || typeof config.content.toolDetails !== "boolean" ||
+    (config.supersededContent !== undefined && (typeof config.supersededContent?.prompts !== "boolean" || typeof config.supersededContent.toolDetails !== "boolean"))) throw new Error("invalid Kiro collector config fields");
   let endpoint: URL;
   try {endpoint = new URL(config.ingestEndpoint);} catch {throw new Error("invalid Kiro ingest endpoint");}
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error("invalid Kiro ingest endpoint");
@@ -49,16 +55,23 @@ export function writeKiroConfig(opts: {key: string; ingestEndpoint: string; conf
   const file = resolveKiroConfigPath({path: opts.configPath});
   const exists = fs.existsSync(file), prior = exists ? readKiroConfig(file) : null;
   const defaults = kiroPaths();
+  const content: ContentPolicy = opts.enrich === undefined ? prior?.content ?? {prompts: false, toolDetails: false} : {prompts: opts.enrich, toolDetails: opts.enrich};
+  const changed = !!prior && (prior.content.prompts !== content.prompts || prior.content.toolDetails !== content.toolDetails);
+  // Only the collector touches its upload spool, under its own state claim.
+  // This write records which choice was replaced; the collector discards an
+  // unsent upload prepared under that choice the next time it starts.
+  const superseded = changed ? {prompts: prior.content.prompts, toolDetails: prior.content.toolDetails} : prior?.supersededContent;
   const config: KiroConfig = {kind: "codetelemetry-kiro-v3", version: 1, enabled: true,
     sourceRoot: prior?.sourceRoot ?? defaults.sourceRoot, stateDir: prior?.stateDir ?? defaults.stateDir,
-    backfill: prior?.backfill ?? false, content: opts.enrich === undefined ? prior?.content ?? {prompts: false, toolDetails: false} : {prompts: opts.enrich, toolDetails: opts.enrich},
+    backfill: prior?.backfill ?? false, content, ...(superseded ? {supersededContent: superseded} : {}),
     key: assertKey(opts.key), ingestEndpoint: opts.ingestEndpoint};
   const endpoint = new URL(config.ingestEndpoint);
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error("invalid Kiro ingest endpoint");
   let backupPath: string | null = null;
   if (exists && opts.backup !== false) {backupPath = file + ".previous"; fs.copyFileSync(file, backupPath); fs.chmodSync(backupPath, 0o600);}
   persistConfig(file, config);
-  return {path: file, created: !exists, backupPath, wrote: ["key", "ingestEndpoint", "enabled", "sourceRoot", "stateDir", "content", "backfill"]};
+  return {path: file, created: !exists, backupPath, wrote: ["key", "ingestEndpoint", "enabled", "sourceRoot", "stateDir", "content", "backfill"],
+    ...(changed ? {notice: KIRO_CAPTURE_CHANGED} : {})};
 }
 export function setKiroEnabled(file: string, enabled: boolean): void {
   const config = readKiroConfig(resolveKiroConfigPath({path: file}));

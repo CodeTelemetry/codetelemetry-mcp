@@ -158,6 +158,10 @@ export async function onboard(opts: OnboardOptions): Promise<OnboardResult> {
       ok: true,
       detail: `${settings.created ? "created" : "updated"} ${settings.path} (${settings.wrote.length} ${client.noun})`,
     });
+    if (settings.notice) {
+      steps.push({ name: "capture_changed", ok: true, detail: settings.notice });
+      log(settings.notice);
+    }
     log(`Wrote ${settings.wrote.length} ${client.noun} to ${settings.path}${settings.backupPath ? ` (backup: ${settings.backupPath})` : ""}`);
   }
 

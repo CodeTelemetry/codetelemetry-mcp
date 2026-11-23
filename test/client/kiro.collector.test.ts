@@ -177,31 +177,77 @@ test("legacy metadata retries remain exact while old content retries are preserv
  }
 });
 
-test("an envelope framed while capture was on is not sent after capture is turned off",async()=>{
-  const f=await fixture();let now=1792434600000,posts=0;
-  const on={...f,now:()=>now,policy:{prompts:true,toolDetails:true},post:async()=>{posts++;return "retry" as const;}};
-  const first=new KiroCollector(on),next=new KiroCollector({...on,policy:{prompts:false,toolDetails:false}});
-  try{
-    await fs.writeFile(f.messages,user("framed-with-content")+"\n");
-    await first.open();await first.tick();await first.tick();await first.close();
-    const file=path.join(f.stateDir,"pending.json"),spool=await fs.readFile(file,"utf8"),checkpoint=await fs.readFile(path.join(f.stateDir,"checkpoint.json"),"utf8");
-    assert.match(JSON.parse(spool).body,/private source text/);
-    const sent=posts;now+=120_000;
-    // The envelope is bound to the capture choice it was framed under. The
-    // collector refuses to start rather than send it or drop it.
-    await assert.rejects(next.open(),/retry spool contract/);
-    assert.equal(posts,sent);
-    assert.equal(await fs.readFile(file,"utf8"),spool);
-    assert.equal(await fs.readFile(path.join(f.stateDir,"checkpoint.json"),"utf8"),checkpoint);
-    // Offsets advance only on acknowledgement, so removing the unsent envelope
-    // loses nothing: the same record is framed again under the new choice.
-    await fs.unlink(file);
-    const bodies:string[]=[];
-    const recovered=new KiroCollector({...on,policy:{prompts:false,toolDetails:false},post:async body=>{bodies.push(body);return "ok" as const;}});
+const ON={prompts:true,toolDetails:true},OFF={prompts:false,toolDetails:false};
+/** Frame one user record under `policy` and leave it unsent in pending.json. */
+async function unsent(policy:{prompts:boolean;toolDetails:boolean}){
+  const f=await fixture();const clock={now:1792434600000};let posts=0;
+  const options={...f,now:()=>clock.now,policy,post:async()=>{posts++;return "retry" as const;}};
+  const first=new KiroCollector(options);
+  try{await fs.writeFile(f.messages,user("framed-before-change")+"\n");await first.open();await first.tick();await first.tick();}finally{await first.close();}
+  const file=path.join(f.stateDir,"pending.json");
+  return {f,clock,options,file,spool:await fs.readFile(file,"utf8"),checkpoint:await fs.readFile(path.join(f.stateDir,"checkpoint.json"),"utf8"),posts:()=>posts};
+}
+
+test("a recorded capture change in either direction discards the unsent envelope and reads its records again",async()=>{
+  for(const [before,after] of [[ON,OFF],[OFF,ON]] as const){
+    const s=await unsent(before);
     try{
-      await recovered.open();await recovered.tick();await recovered.tick();
-      assert.equal(bodies.length,1);
-      assert.match(bodies[0],/framed-with-content/);assert.doesNotMatch(bodies[0],/private source text/);
-    }finally{await recovered.close();}
-  }finally{await first.close();await next.close();await fs.rm(f.root,{recursive:true,force:true});}
+      assert.equal(/private source text/.test(JSON.parse(s.spool).body),before.prompts);
+      const old=JSON.parse(s.spool),bodies:string[]=[],keys:string[]=[];s.clock.now+=120_000;
+      const next=new KiroCollector({...s.options,policy:after,supersededPolicy:before,post:async(body,key)=>{bodies.push(body);keys.push(key);return "ok" as const;}});
+      try{
+        await next.open();
+        assert.equal(next.discardedSuperseded,true);
+        await assert.rejects(fs.stat(s.file));
+        // Nothing was committed for the discarded envelope, so nothing is lost.
+        assert.equal(await fs.readFile(path.join(s.f.stateDir,"checkpoint.json"),"utf8"),s.checkpoint);
+        await next.tick();await next.tick();
+        assert.equal(bodies.length,1);assert.notEqual(bodies[0],old.body);assert.notEqual(keys[0],old.id);
+        assert.match(bodies[0],/framed-before-change/);
+        assert.equal(/private source text/.test(bodies[0]),after.prompts);
+        assert.equal(next.snapshot().pending,false);assert.equal(next.snapshot().logsAcknowledged,1);
+        await assert.rejects(fs.stat(s.file));
+      }finally{await next.close();}
+    }finally{await fs.rm(s.f.root,{recursive:true,force:true});}
+  }
+});
+
+test("an unchanged capture choice keeps pending.json and retries its exact bytes",async()=>{
+  for(const policy of [ON,OFF]){
+    const s=await unsent(policy);
+    try{
+      const old=JSON.parse(s.spool),sent:Array<[string,string]>=[];s.clock.now+=120_000;
+      // A change recorded earlier does not touch an envelope framed under the current choice.
+      const next=new KiroCollector({...s.options,supersededPolicy:policy===ON?OFF:ON,post:async(body,key)=>{sent.push([body,key]);return "retry" as const;}});
+      try{
+        await next.open();assert.equal(next.discardedSuperseded,false);
+        assert.equal(await fs.readFile(s.file,"utf8"),s.spool);
+        await next.tick();
+        assert.deepEqual(sent,[[old.body,old.id]]);
+        assert.equal(JSON.parse(await fs.readFile(s.file,"utf8")).body,old.body);
+      }finally{await next.close();}
+    }finally{await fs.rm(s.f.root,{recursive:true,force:true});}
+  }
+});
+
+test("a capture mismatch that no recorded change explains is still refused without sending or dropping",async()=>{
+  for(const superseded of [undefined,{prompts:true,toolDetails:false}]){
+    const s=await unsent(ON);
+    try{
+      s.clock.now+=120_000;const sent=s.posts();
+      const next=new KiroCollector({...s.options,policy:OFF,...(superseded?{supersededPolicy:superseded}:{})});
+      try{
+        await assert.rejects(next.open(),/retry spool contract/);
+        assert.equal(s.posts(),sent);assert.equal(await fs.readFile(s.file,"utf8"),s.spool);
+        assert.equal(await fs.readFile(path.join(s.f.stateDir,"checkpoint.json"),"utf8"),s.checkpoint);
+      }finally{await next.close();}
+    }finally{await fs.rm(s.f.root,{recursive:true,force:true});}
+  }
+  // A damaged envelope is never discarded on the strength of a recorded change.
+  const s=await unsent(ON);
+  try{
+    const damaged=JSON.parse(s.spool);damaged.body+=" ";await fs.writeFile(s.file,JSON.stringify(damaged));
+    const next=new KiroCollector({...s.options,policy:OFF,supersededPolicy:ON});
+    try{await assert.rejects(next.open(),/retry spool contract/);assert.equal(next.discardedSuperseded,false);await fs.stat(s.file);}finally{await next.close();}
+  }finally{await fs.rm(s.f.root,{recursive:true,force:true});}
 });
