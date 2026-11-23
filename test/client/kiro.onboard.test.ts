@@ -65,3 +65,40 @@ test("one-shot collection closes ownership and never reports its still-alive cal
   assert(!output.join("").includes(key));
  }finally{await fs.rm(root,{recursive:true,force:true});}
 });
+
+test("--enrich turns capture on, --no-enrich turns it off, and neither flag keeps the stored choice",async()=>{
+ const home=await fs.mkdtemp(path.join(os.tmpdir(),"kiro-capture-")),file=path.join(home,"config.json"),source=path.join(home,"runtime-source");
+ try{
+  await fs.mkdir(source,{recursive:true});
+  await fs.writeFile(path.join(source,"bin.ts"),'import "../../src/client/cli.ts";');await fs.writeFile(path.join(source,"cli.ts"),"export {};\n");
+  // The service manager is a recorder: no real systemctl or launchctl is called.
+  const calls:string[][]=[];const kiro={home,platform:"linux" as const,runtimeSource:source,node:"/usr/local/bin/node",execute:(cmd:string,args:string[])=>{calls.push([cmd,...args]);return "";}};
+  const login=(...flags:string[])=>run([key,"--client","kiro","--settings",file,"--endpoint","https://ingest.invalid","--no-test","--no-verify","--json",...flags],{kiro});
+  const content=async()=>JSON.parse(await fs.readFile(file,"utf8")).content;
+  const on={prompts:true,toolDetails:true},off={prompts:false,toolDetails:false};
+  assert.equal(await login(),0);assert.deepEqual(await content(),off);
+  assert.equal(await login("--enrich"),0);assert.deepEqual(await content(),on);
+  assert.equal(await login(),0);assert.deepEqual(await content(),on);
+  assert.equal(await login("--no-enrich"),0);assert.deepEqual(await content(),off);
+  assert.equal(await login(),0);assert.deepEqual(await content(),off);
+  const before=await fs.readFile(file,"utf8");
+  assert.equal(await login("--enrich=yes"),1);assert.equal(await fs.readFile(file,"utf8"),before);
+  assert.ok(calls.length>0);assert(!JSON.stringify(calls).includes(key));
+  await assert.rejects(fs.stat(path.join(home,".kiro")));
+ }finally{await fs.rm(home,{recursive:true,force:true});}
+});
+
+test("the config writer treats capture as three states for every caller",async()=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),"kiro-capture-writer-")),file=path.join(root,"config.json");
+ try{
+  const write=(enrich?:boolean)=>onboard({client:"kiro",key,settings:{path:file,enrich},sendTest:false,verify:false,activateCollector:false,endpoints:{ingestEndpoint:"https://ingest.invalid"}});
+  const content=async()=>JSON.parse(await fs.readFile(file,"utf8")).content;
+  await write(true);assert.deepEqual(await content(),{prompts:true,toolDetails:true});
+  await write();assert.deepEqual(await content(),{prompts:true,toolDetails:true});
+  await write(false);assert.deepEqual(await content(),{prompts:false,toolDetails:false});
+  await write();assert.deepEqual(await content(),{prompts:false,toolDetails:false});
+  // A stored choice that turned on only one kind of content is kept as it is.
+  const config=JSON.parse(await fs.readFile(file,"utf8"));config.content={prompts:true,toolDetails:false};await fs.writeFile(file,JSON.stringify(config));
+  await write();assert.deepEqual(await content(),{prompts:true,toolDetails:false});
+ }finally{await fs.rm(root,{recursive:true,force:true});}
+});

@@ -11,6 +11,12 @@ use `--no-enrich` to opt out. Saved choices survive resumption. Personal onboard
 and repository-observation defaults are unchanged. See the repository README for
 privacy, client setup and service removal.
 
+Kiro collects metadata only by default. `login --client kiro --enrich` also sends
+prompt text and supported tool arguments, with the same best-effort credential
+scrubbing as Cursor: a shell command that passes a secret as an argument is
+withheld whole, which also withholds harmless commands such as `psql -p 5432`.
+`--no-enrich` turns capture off again; with neither flag the stored choice is kept.
+
 ## Organization projects
 
 Use `npx -y @codetelemetry/connect@0.5.0 join --organization-id tm_example --client codex --project .`

@@ -818,6 +818,29 @@ Kiro reads local V3 transcripts with prompt/tool content disabled by default;
 service; Windows uses foreground `kiro collect`. Configuration lives separately
 from Kiro itself. Checkpoints and owned runtime files survive service removal.
 
+With `--enrich`, Kiro sends prompt text and the arguments of shell, read, write and
+replace calls. Credential scrubbing is best effort and uses the same rules as the
+Cursor collector: text in a known credential shape (key blocks, bearer and
+authorization values with their scheme word, assignments to secret-named variables,
+`X-...:` request headers, a password given in prose, common token formats, a
+password in a URL of any scheme) is replaced in prompts, and a tool input that
+holds such text is withheld whole. A shell command that passes a secret as an
+argument (`curl -u name:password`, an authenticating `-H` header, `mysql -p...`,
+`docker login -p`, an option named for a secret) is also withheld whole. That rule
+cannot tell a password from another use of the same option, so harmless commands
+such as `psql -p 5432` or `zip -p` are withheld too; the call is still reported
+with its tool name and result. A secret in a shape the patterns do not know is
+sent as typed, so leave `--enrich` off where prompts or commands may carry secrets.
+
+`login --client kiro --no-enrich` turns capture off again for records read from
+then on; with neither flag the stored choice is kept. Kiro does not rewrite an
+upload that was already prepared: one unsent upload is bound to the capture choice
+it was prepared under, and after a change in either direction the collector stops
+with `invalid Kiro retry spool contract` instead of sending it. To recover, either
+restore the earlier choice until `kiro status` shows nothing pending, or remove
+`pending.json` from the collector's state directory; source offsets advance only
+on acknowledgement, so those records are then read again under the new choice.
+
 The Kiro collector sends bounded, sanitized source records. Event interpretation,
 call/result association, usage aggregation and analytics run in the service.
 The service must support `kiro-v3-source-v1` before this collector is released;

@@ -13,8 +13,9 @@ export const CREDENTIAL_BLOCK_RE = /-----BEGIN ([A-Z ]*(?:PRIVATE KEY|CREDENTIAL
 export const SECRET_ASSIGNMENT_RE = /(["']?(?:api[_-]?key|authorization|client[_-]?secret|password|passwd|secret|token)["']?\s*[:=]\s*["']?)[^\s,"'}]+/i;
 const REDACTED = "<REDACTED>";
 
-// The stricter patterns below are the ones the Cursor collector uses. The
-// three above stay exactly as Kiro released them. Scrubbing is best effort:
+// The stricter patterns below are the ones the Cursor and Kiro collectors
+// use for opted-in content. The three above stay exactly as first released;
+// Kiro still checks its source identifiers with them. Scrubbing is best effort:
 // these patterns know common shapes of a credential, not every one.
 //
 // Every quantifier that could rescan the same text is bounded or anchored at a

@@ -42,13 +42,16 @@ function persistConfig(file: string, config: KiroConfig): void {
   try {fs.writeFileSync(fd, body); fs.fsyncSync(fd);} finally {fs.closeSync(fd);}
   try {fs.renameSync(temporary, file);} catch {fs.unlinkSync(temporary); throw new Error("Kiro collector config commit failed");}
 }
+/** `enrich` has three states: true turns prompt and tool-detail capture on,
+ * false turns it off for records framed from then on, and undefined keeps the
+ * stored choice (off for a new config). */
 export function writeKiroConfig(opts: {key: string; ingestEndpoint: string; configPath: string; enrich?: boolean; backup?: boolean}): WriteResult {
   const file = resolveKiroConfigPath({path: opts.configPath});
   const exists = fs.existsSync(file), prior = exists ? readKiroConfig(file) : null;
   const defaults = kiroPaths();
   const config: KiroConfig = {kind: "codetelemetry-kiro-v3", version: 1, enabled: true,
     sourceRoot: prior?.sourceRoot ?? defaults.sourceRoot, stateDir: prior?.stateDir ?? defaults.stateDir,
-    backfill: prior?.backfill ?? false, content: opts.enrich ? {prompts: true, toolDetails: true} : prior?.content ?? {prompts: false, toolDetails: false},
+    backfill: prior?.backfill ?? false, content: opts.enrich === undefined ? prior?.content ?? {prompts: false, toolDetails: false} : {prompts: opts.enrich, toolDetails: opts.enrich},
     key: assertKey(opts.key), ingestEndpoint: opts.ingestEndpoint};
   const endpoint = new URL(config.ingestEndpoint);
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error("invalid Kiro ingest endpoint");

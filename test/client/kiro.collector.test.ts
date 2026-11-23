@@ -176,3 +176,32 @@ test("legacy metadata retries remain exact while old content retries are preserv
   }finally{await collector.close();await fs.rm(f.root,{recursive:true,force:true});}
  }
 });
+
+test("an envelope framed while capture was on is not sent after capture is turned off",async()=>{
+  const f=await fixture();let now=1792434600000,posts=0;
+  const on={...f,now:()=>now,policy:{prompts:true,toolDetails:true},post:async()=>{posts++;return "retry" as const;}};
+  const first=new KiroCollector(on),next=new KiroCollector({...on,policy:{prompts:false,toolDetails:false}});
+  try{
+    await fs.writeFile(f.messages,user("framed-with-content")+"\n");
+    await first.open();await first.tick();await first.tick();await first.close();
+    const file=path.join(f.stateDir,"pending.json"),spool=await fs.readFile(file,"utf8"),checkpoint=await fs.readFile(path.join(f.stateDir,"checkpoint.json"),"utf8");
+    assert.match(JSON.parse(spool).body,/private source text/);
+    const sent=posts;now+=120_000;
+    // The envelope is bound to the capture choice it was framed under. The
+    // collector refuses to start rather than send it or drop it.
+    await assert.rejects(next.open(),/retry spool contract/);
+    assert.equal(posts,sent);
+    assert.equal(await fs.readFile(file,"utf8"),spool);
+    assert.equal(await fs.readFile(path.join(f.stateDir,"checkpoint.json"),"utf8"),checkpoint);
+    // Offsets advance only on acknowledgement, so removing the unsent envelope
+    // loses nothing: the same record is framed again under the new choice.
+    await fs.unlink(file);
+    const bodies:string[]=[];
+    const recovered=new KiroCollector({...on,policy:{prompts:false,toolDetails:false},post:async body=>{bodies.push(body);return "ok" as const;}});
+    try{
+      await recovered.open();await recovered.tick();await recovered.tick();
+      assert.equal(bodies.length,1);
+      assert.match(bodies[0],/framed-with-content/);assert.doesNotMatch(bodies[0],/private source text/);
+    }finally{await recovered.close();}
+  }finally{await first.close();await next.close();await fs.rm(f.root,{recursive:true,force:true});}
+});
