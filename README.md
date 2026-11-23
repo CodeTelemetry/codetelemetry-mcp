@@ -351,8 +351,10 @@ npx -y @codetelemetry/connect public-sessions events s-4f9c --limit 10
 ```
 
 A `pub_…` id an owner shared works in place of a sample id. Without any client,
-anonymous MCP hosts can connect to `https://codetelemetry.com/public-mcp` once it
-is enabled; it serves the same three read tools.
+any MCP host can connect to `https://codetelemetry.com/public-mcp` (Streamable
+HTTP, no sign-in); it serves the same three read tools. Publishing, what becomes
+public, and the limits are described in the
+[public sessions guide](https://codetelemetry.com/docs/integrations/public-sessions).
 
 GitHub PR gate flow, run from inside the repository to gate:
 `configure_github_pr_gate { addRepositories: ["owner/repo"], enabled: true }` →
