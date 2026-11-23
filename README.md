@@ -453,10 +453,11 @@ dependencies and state directories. `.tf` / `.tf.json` selects Terraform;
 `Pulumi.yaml` / `Pulumi.yml` selects Pulumi. Mixed, missing or incomplete context
 requires `format: "terraform"` or `format: "pulumi"`, or a narrower directory.
 
-Terraform writes `codetelemetry-grader.tf.json`, for use with the local
-`codetelemetry_grader_config` provider resource. Configure the provider using
-[codetelemetry-providers](https://github.com/ElliotGardiner/codetelemetry-providers)
-before planning; it is not a published registry integration.
+Terraform writes `codetelemetry-grader.tf.json`, for use with the
+`codetelemetry_grader_config` resource of the
+[CodeTelemetry Terraform provider](https://registry.terraform.io/providers/CodeTelemetry/codetelemetry/latest)
+(source: [CodeTelemetry/terraform-provider-codetelemetry](https://github.com/CodeTelemetry/terraform-provider-codetelemetry)).
+Configure the provider before planning.
 Pulumi writes `codetelemetry-grader.pulumi.yaml` as JSON, a valid YAML subset.
 Move it to a **separate directory** as `Pulumi.yaml`, build the provider binary
 there at `./bin/terraform-provider-codetelemetry`, then run `pulumi install` and
