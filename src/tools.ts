@@ -944,12 +944,12 @@ export const TOOLS: ToolDef[] = [
         key: ctx.session.useKey(),
         ingestEndpoint: endpointsFor(ctx).ingestEndpoint,
         configPath: configPathFor(client, args, ctx, requested.path),
-        enrich: args.enrich === true,
+        enrich: typeof args.enrich === "boolean" ? args.enrich : undefined,
           repositoryObservation: args.repositoryObservation === true,
       });
       return {
         ok: true, path: r.path, wrote: r.wrote, backupPath: r.backupPath, created: r.created,
-        ...(client === "pi" ? { note: PI_EXTENSION_HINT } : {}),
+        ...(client === "pi" ? { note: PI_EXTENSION_HINT } : r.notice ? { note: r.notice } : {}),
       };
     },
   },
@@ -1021,7 +1021,7 @@ export const TOOLS: ToolDef[] = [
           scope: args.scope === "project" ? "project" : "user",
           // A host's trusted override outranks the model's `path`.
           path: ctx.configPathsOverride?.[client] ?? requested.path,
-          enrich: args.enrich === true,
+          enrich: typeof args.enrich === "boolean" ? args.enrich : undefined,
           repositoryObservation: args.repositoryObservation === true,
         },
         verifyTimeoutMs: typeof args.timeoutMs === "number" ? args.timeoutMs : undefined,

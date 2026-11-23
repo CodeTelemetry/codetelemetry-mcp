@@ -149,3 +149,117 @@ test("background execution remains source data and does not select command fact 
  const result=applyKiroRecord(state,Buffer.from(lines[2]),sessionId,{prompts:false,toolDetails:true},emptyRecordCounters())[0];
  assert.equal(JSON.parse(source(result).context[0].input).run_in_background,true);
 });
+
+// Synthetic values only. Each is assembled from parts so that no line of this
+// file holds a complete credential shape.
+const CONTENT = {prompts: true, toolDetails: true};
+const value = "synthetic" + "Value0123456789";
+const strictSamples: Record<string, string> = {
+  "assignment to a secret-named variable": `export AWS_SECRET_ACCESS_KEY=${value}`,
+  "assignment to a passphrase name": `db_passphrase: ${value}`,
+  "authorization value behind its scheme word": `Authorization: Basic ${value}`,
+  "X- request header": `X-Session-Id: ${value}`,
+  "password given in prose": `the password is ${value} for staging`,
+  "fine-grained GitHub token shape": "github_" + "pat_" + "A1b2".repeat(6),
+  "GitLab token shape": "gl" + "pat-" + "A1b2".repeat(5),
+  "payment test key shape": "sk_" + "test_" + "A1b2".repeat(4),
+  "password in a non-HTTP URL": `postgres://deploy:${value}@db.example.test/app`,
+};
+const secretOf = (sample: string) => sample.includes(value) ? value : sample;
+const userRecord = (content: string) => {const record = JSON.parse(lines[0]); record.payload.content = content; return record;};
+const bashCall = (command: string) => {
+  const record = JSON.parse(lines[1]);
+  record.payload.toolName = "execute_bash";
+  record.payload.args = {command, cwd: "/synthetic", run_in_background: false};
+  return record;
+};
+/** The tool input the service would receive for one call, and the state kept for it. */
+function deliveredInput(call: unknown) {
+  const state = emptyRecordState(), counters = emptyRecordCounters();
+  applyKiroRecord(state, bytes(call), sessionId, CONTENT, counters);
+  const stored = JSON.stringify(state);
+  const result = applyKiroRecord(state, Buffer.from(lines[2]), sessionId, CONTENT, counters)[0];
+  return {input: source(result).context[0].input as string | undefined, name: source(result).context[0].name, stored, counters};
+}
+
+test("each stricter credential class is redacted from a prompt and withholds a tool input", () => {
+  for (const [label, sample] of Object.entries(strictSamples)) {
+    const secret = secretOf(sample);
+    const captured = applyKiroRecord(emptyRecordState(), bytes(userRecord(`please run this: ${sample} then stop`)), sessionId, CONTENT, emptyRecordCounters())[0];
+    const content = String(source(captured).payload.content);
+    assert.ok(!content.includes(secret), label);
+    assert.match(content, /^please run this: .*<REDACTED>.* then stop$/, label);
+    assert.equal(source(captured).payload.contentLength, `please run this: ${sample} then stop`.length, label);
+    const delivered = deliveredInput(bashCall(`deploy ${sample}`));
+    assert.equal(delivered.input, undefined, label);
+    assert.equal(delivered.name, "execute_bash", label);
+    assert.ok(!delivered.stored.includes(secret), label);
+    assert.equal(delivered.counters.unsupportedDetails, 1, label);
+  }
+  const write = JSON.parse(lines[1]);
+  write.payload.toolName = "fs_write";
+  write.payload.args = {path: "/synthetic/.env", text: strictSamples["assignment to a secret-named variable"]};
+  assert.equal(deliveredInput(write).input, undefined);
+});
+
+test("a shell command that passes a secret as an argument is withheld whole", () => {
+  const commands = [`curl -u deploy:${value} https://example.test`, `mysql -p${value} app`, `docker login -p ${value} registry.example.test`,
+    `curl -H "Cookie: sid=${value}" https://example.test`, `deploy-tool --api-key ${value}`,
+    // The rule cannot tell a port or an unrelated short option from a password.
+    "psql -p 5432 app", "zip -p out.zip notes.txt"];
+  for (const command of commands) {
+    const delivered = deliveredInput(bashCall(command));
+    assert.equal(delivered.input, undefined, command);
+    assert.ok(!delivered.stored.includes(value), command);
+    assert.equal(delivered.counters.unsupportedDetails, 1, command);
+  }
+  // The rule is for shell commands only: the same text as a file path is not a command line.
+  const read = JSON.parse(lines[1]);
+  read.payload.toolName = "read_file";
+  read.payload.args = {path: "/synthetic/notes/psql -p 5432.md"};
+  assert.deepEqual(JSON.parse(deliveredInput(read).input!), read.payload.args);
+});
+
+test("an ordinary command, path and prompt pass through unchanged", () => {
+  for (const command of ["npm test -- --grep transport", "git status", "ls -la /synthetic/src/tokens", "node scripts/build.ts --watch"]) {
+    const delivered = deliveredInput(bashCall(command));
+    assert.deepEqual(JSON.parse(delivered.input!), {command, cwd: "/synthetic", run_in_background: false}, command);
+    assert.equal(delivered.counters.unsupportedDetails, 0, command);
+  }
+  const read = JSON.parse(lines[1]);
+  read.payload.toolName = "read_file";
+  read.payload.args = {path: "/synthetic/src/tokens/keyboard.ts", offset: 0, limit: 40};
+  assert.deepEqual(JSON.parse(deliveredInput(read).input!), read.payload.args);
+  const prompt = "Explain how the token bucket and the password reset flow work in src/auth/keys.ts";
+  const captured = applyKiroRecord(emptyRecordState(), bytes(userRecord(prompt)), sessionId, CONTENT, emptyRecordCounters())[0];
+  assert.equal(source(captured).payload.content, prompt);
+});
+
+test("a tool input stored by an earlier version is checked again with the stricter rules", () => {
+  const call = JSON.parse(lines[1]);
+  for (const command of [`curl -u deploy:${value} https://example.test`, `export AWS_SECRET_ACCESS_KEY=${value}`]) {
+    const state = emptyRecordState(), counters = emptyRecordCounters();
+    state.calls.push({id: call.payload.toolCallId, name: "execute_bash", executionId: call.payload.executionId,
+      input: JSON.stringify({command, cwd: "/synthetic", run_in_background: false})});
+    const result = applyKiroRecord(state, Buffer.from(lines[2]), sessionId, CONTENT, counters)[0];
+    assert.equal(source(result).context[0].input, undefined, command);
+    assert.ok(!JSON.stringify(result).includes(value), command);
+    assert.equal(counters.unsupportedDetails, 1, command);
+  }
+});
+
+test("scrubbing does not change the replay ledger, so a checkpoint from an earlier version still deduplicates", () => {
+  const records = [userRecord(`use ${strictSamples["password given in prose"]}`), bashCall(`curl -u deploy:${value} https://example.test`), JSON.parse(lines[2])];
+  const ledger = (policy: {prompts: boolean; toolDetails: boolean}) => {
+    const state = emptyRecordState();
+    for (const record of records) applyKiroRecord(state, bytes(record), sessionId, policy, emptyRecordCounters());
+    return state;
+  };
+  const metadataOnly = ledger(NO_CONTENT), withContent = ledger(CONTENT);
+  // The ledger is a digest of the source record, taken before any scrubbing.
+  assert.deepEqual(withContent.seen, metadataOnly.seen);
+  assert.equal(withContent.seen.length, 3);
+  const counters = emptyRecordCounters();
+  for (const record of records) assert.deepEqual(applyKiroRecord(metadataOnly, bytes(record), sessionId, CONTENT, counters), []);
+  assert.equal(counters.duplicates, 3);
+});

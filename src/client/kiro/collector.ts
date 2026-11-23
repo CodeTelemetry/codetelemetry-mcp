@@ -17,6 +17,9 @@ export type KiroHealth = {version: 2; status: string; trackedSessions: number; p
   sourceConflicts: number; sourceErrors: number; ignoredRecords: number; malformedRecords: number; duplicateRecords: number; evictedCalls: number; missingCalls?: number; unsupportedToolDetails: number; discoveryOverflow: number; oversizeRecords: number; readBytes: number;
   logsAcknowledged: number; requests: number; pending: boolean; lastTickAt: number};
 export type KiroCollectorOptions = {sourceRoot: string; stateDir: string; destinationHash: string; post: KiroPost; policy?: ContentPolicy;
+  /** The capture choice a configuration change replaced. An unsent envelope
+   * framed under it is discarded at open instead of refused. */
+  supersededPolicy?: ContentPolicy;
   now?: () => number; tickBudgetMs?: number; bootstrap?: "start" | "end"};
 
 /** Fixed-depth discovery keeps directory cursors open across ticks. A huge
@@ -67,6 +70,8 @@ export class KiroCollector {
   private stateBytesBlocked = false;
   private running = false;
   private lastPostAt = -Infinity;
+  /** True when open() retired an envelope framed under a replaced capture choice. */
+  discardedSuperseded = false;
   private startedAt: number;
   private health: KiroHealth = {version: 2, status: "idle", trackedSessions: 0, parkedSessions: 0, skippingOversizeSessions:0, cachedTailBytes:0, cachedTailSessions:0, carryEvictions: 0, discoveryBacklog: 0, backloggedSessions: 0, unsupportedSessions: 0,
     sourceConflicts: 0, sourceErrors: 0, ignoredRecords: 0, malformedRecords: 0, duplicateRecords: 0, evictedCalls: 0, unsupportedToolDetails: 0, discoveryOverflow: 0, oversizeRecords: 0, readBytes: 0, logsAcknowledged: 0,
@@ -79,7 +84,7 @@ export class KiroCollector {
     this.options = {...options, policy: Object.freeze({...policy})};
     this.startedAt = (options.now ?? Date.now)();
   }
-  private policyHash() {const policy = this.policy(); return digest(JSON.stringify([policy.prompts, policy.toolDetails]));}
+  private policyHash(policy: ContentPolicy = this.policy()) {return digest(JSON.stringify([policy.prompts, policy.toolDetails]));}
   private now() {return (this.options.now ?? Date.now)();}
   private file(name: string) {return path.join(this.options.stateDir, name);}
   private policy() {return this.options.policy ?? NO_CONTENT;}
@@ -90,7 +95,19 @@ export class KiroCollector {
     try {
       const rootHash = digest(path.resolve(this.options.sourceRoot));
       this.checkpoint = normalizeKiroCheckpoint(await readBoundedJson(this.file("checkpoint.json"), KIRO_LIMITS.checkpointBytes),rootHash,this.options.destinationHash);
-      const pending = await readBoundedJson(this.file("pending.json"), KIRO_LIMITS.spoolBytes) as Pending | null;
+      let pending = await readBoundedJson(this.file("pending.json"), KIRO_LIMITS.spoolBytes) as Pending | null;
+      // A recorded capture change retires the envelope framed under the
+      // replaced choice. Its staged offsets were never committed, so the same
+      // source records are read again and framed under the current choice.
+      // This runs under the state claim, so no other process can be sending
+      // it. Any other mismatch is still refused below.
+      const superseded = this.options.supersededPolicy;
+      if (pending && superseded && typeof superseded.prompts === "boolean" && typeof superseded.toolDetails === "boolean" &&
+        pending.policyHash !== this.policyHash() && pending.policyHash === this.policyHash(superseded) &&
+        pending.version === 1 && pending.rootHash === rootHash && pending.destinationHash === this.options.destinationHash &&
+        typeof pending.body === "string" && pending.digest === digest(pending.body)) {
+        await fs.unlink(this.file("pending.json")); pending = null; this.discardedSuperseded = true;
+      }
       if (pending) {
         if((pending.privacyVersion!==undefined && pending.privacyVersion!==2) ||
           (pending.privacyVersion!==2 && (this.policy().prompts || this.policy().toolDetails))) {

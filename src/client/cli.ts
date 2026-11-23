@@ -15,6 +15,7 @@ import { importWorkspaceHistory } from "./workspaceImport.ts";
 import { bootstrapWorkspace, type BootstrapOptions } from "./bootstrap.ts";
 import { listWorkspaces, loadWorkspace, bindWorkspace, bindingOf, findWorkspaceBinding, sameWorkspace, writeCodexWorkspaceProfile } from "./workspaces.ts";
 import { runKiroCommand } from "./kiro/command.ts";
+import type { KiroServiceOptions } from "./kiro/service.ts";
 import { PUBLIC_SESSIONS_HELP, runPublicSessionsCommand } from "./publicSessionsCommand.ts";
 import { cursorNodeNotice, runCursorCommand, type CursorCommandHost } from "./cursor/command.ts";
 import { CursorPreflightRefusal, cursorPreflight } from "./cursor/preflight.ts";
@@ -138,6 +139,9 @@ Options:
   --api-base <url>       Onboarding API base (default: https://codetelemetry.com)
   --endpoint <url>       OTLP ingest endpoint (default: https://ingest.codetelemetry.com)
   --enrich               Also enable prompt/body/tool-content flags (richer dashboards)
+                         With --client kiro: --no-enrich turns capture off again
+                         for new records; with neither flag the stored choice
+                         is kept. Credential scrubbing is best effort.
   --no-open              On \`login\`, don't auto-open the browser (just print the URL)
   --no-test              Skip sending the test event
   --no-verify            Skip waiting for the probe to land
@@ -701,9 +705,10 @@ async function runImportCommand(
   return result.ok ? 0 : 1;
 }
 
-/** What a caller may replace: the machine the Cursor collector is installed on
- *  and the fetch its onboarding uses. Tests pass both; the CLI passes neither. */
-export type RunDeps = { cursor?: CursorCommandHost; fetchImpl?: FetchLike };
+/** What a caller may replace: the machine the Cursor collector is installed on,
+ *  the service manager the Kiro collector is enabled with, and the fetch
+ *  onboarding uses. Tests pass them; the CLI passes none. */
+export type RunDeps = { cursor?: CursorCommandHost; kiro?: KiroServiceOptions; fetchImpl?: FetchLike };
 
 export async function run(argv: string[], deps: RunDeps = {}): Promise<number> {
   if(argv[0]==="run") {
@@ -834,15 +839,22 @@ export async function run(argv: string[], deps: RunDeps = {}): Promise<number> {
     out(cursorOptions);
     return 1;
   }
+  // Kiro and Cursor keep their stored capture choice when neither --enrich nor
+  // --no-enrich is given; --no-enrich turns capture off.
+  const keepsCapture = client === "kiro" && onboarding;
+  if (keepsCapture && hasFlag(flags, "enrich") && typeof flags.enrich !== "boolean") {
+    out("--enrich takes no value; use --enrich or --no-enrich.");
+    return 1;
+  }
   const common = {
     client,
     endpoints,
-    // Cursor keeps its stored capture choice when neither --enrich nor --no-enrich is given.
-    settings: { ...settingsOpts, enrich: cursorOptions ? cursorOptions.enrich : !!flags.enrich },
+    settings: { ...settingsOpts, enrich: cursorOptions ? cursorOptions.enrich : keepsCapture ? flags.enrich as boolean | undefined : !!flags.enrich },
     sendTest: flags.test !== false,
     verify: flags.verify !== false,
     logger: flags.json ? undefined : out,
     ...(cursorOptions ? { cursor: { ...cursorOptions, host: deps.cursor } } : {}),
+    ...(keepsCapture && deps.kiro ? { kiroService: deps.kiro } : {}),
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
   };
   const expectedScope = expectedScopeFromFlags(flags);
