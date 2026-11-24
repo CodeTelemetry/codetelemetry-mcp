@@ -31,7 +31,7 @@ import type { ImportLog } from "../import/model.ts";
 import type { FetchLike } from "../otlp.ts";
 import { cursorStateFiles, type CursorPolicy } from "./config.ts";
 import { CURSOR_HOOK_LIMITS, type CursorSpoolLine } from "./hookProgram.ts";
-import { CURSOR_LIMITS, CURSOR_SOURCE_FORMAT, CURSOR_UPLOADED_HOOKS, CursorContext, cursorEnvelope, cursorRecordBytes, cursorTimeMs,
+import { CURSOR_LIMITS, CURSOR_SOURCE_FORMAT, CURSOR_UPLOADED_HOOKS, CursorContext, cursorEnvelope, cursorRecordBytes, cursorReplyIsEmpty, cursorTimeMs,
   frameCursorRecord, parseCursorSpoolLine, type CursorConversation, type CursorLimits } from "./records.ts";
 
 const LABEL = "Cursor";
@@ -231,7 +231,10 @@ function restoreInodes(value: unknown, limits: CursorLimits): Record<string, str
   return Object.fromEntries(entries) as Record<string, string>;
 }
 
-function restoreCheckpoint(value: unknown, limits: CursorLimits): CursorCheckpoint {
+/** The checkpoint as saved, with the context reduced to the capture options in
+ *  force: reasoning text and file content held for a later record are left out
+ *  once their option is off. */
+function restoreCheckpoint(value: unknown, limits: CursorLimits, policy: CursorPolicy): CursorCheckpoint {
   const totals = Object.fromEntries(TOTALS.map(name => [name, 0])) as CursorTotals;
   if (value === null) return { version: 1, offsets: {}, inodes: {}, conversations: [], totals };
   // A newer contract is refused, never reset: its offsets are what keeps records from being sent twice.
@@ -247,7 +250,7 @@ function restoreCheckpoint(value: unknown, limits: CursorLimits): CursorCheckpoi
     version: 1,
     offsets: restoreOffsets(value.offsets, limits),
     inodes: restoreInodes(value.inodes, limits),
-    conversations: new CursorContext(value.conversations, limits).snapshot(),
+    conversations: new CursorContext(value.conversations, limits, policy).snapshot(),
     totals,
     ...(value.lastEnvelope !== undefined ? { lastEnvelope: value.lastEnvelope as string } : {}),
     ...(value.lastPostAt !== undefined ? { lastPostAt: value.lastPostAt as number } : {}),
@@ -269,7 +272,7 @@ function restoreEnvelope(value: Record<string, unknown>, limits: CursorLimits): 
 
 /** A pending envelope read back from disk, or null when it cannot be trusted.
  *  Discarding it is safe: its records are still in the spool. */
-function restorePending(value: unknown, limits: CursorLimits): CursorPending | null {
+function restorePending(value: unknown, limits: CursorLimits, policy: CursorPolicy): CursorPending | null {
   if (isRecord(value) && typeof value.version === "number" && value.version > 1) throw new Error("unsupported Cursor pending contract");
   if (!isRecord(value) || value.version !== 1) return null;
   const envelope = restoreEnvelope(value, limits);
@@ -285,7 +288,7 @@ function restorePending(value: unknown, limits: CursorLimits): CursorPending | n
     const raw = value.advance;
     try {
       if (!isRecord(raw) || !isRecord(raw.counts) || ![raw.counts.spooled, raw.counts.malformed, raw.counts.expired].every(isCount)) return null;
-      advance = { offsets: restoreOffsets(raw.offsets, limits), inodes: restoreInodes(raw.inodes, limits), conversations: new CursorContext(raw.conversations, limits).snapshot(),
+      advance = { offsets: restoreOffsets(raw.offsets, limits), inodes: restoreInodes(raw.inodes, limits), conversations: new CursorContext(raw.conversations, limits, policy).snapshot(),
         counts: { spooled: raw.counts.spooled as number, malformed: raw.counts.malformed as number, expired: raw.counts.expired as number } };
     } catch {
       return null;
@@ -371,11 +374,15 @@ export class CursorCollector {
       }, LABEL);
       await ownedDirectory(this.files.spool);
       await ownedDirectory(this.files.rejected);
-      this.checkpoint = restoreCheckpoint(await readBoundedJson(this.files.checkpoint, limits.checkpointBytes, LABEL), limits);
+      const saved = await readBoundedJson(this.files.checkpoint, limits.checkpointBytes, LABEL);
+      this.checkpoint = restoreCheckpoint(saved, limits, this.options.policy);
       const before = JSON.stringify(this.checkpoint.totals);
+      // Content a turned-off option had put in the saved context leaves the disk now.
+      const held = (conversations: unknown): number => JSON.stringify(conversations ?? []).length;
+      const reducedContext = isRecord(saved) && held(saved.conversations) !== held(this.checkpoint.conversations);
       await this.sweepQuarantine();
       await this.recoverPending();
-      if (JSON.stringify(this.checkpoint.totals) !== before) await this.commit(undefined);
+      if (reducedContext || JSON.stringify(this.checkpoint.totals) !== before) await this.commit(undefined);
       const lastPost = Math.max(this.checkpoint.lastPostAt ?? 0, this.pending?.lastAttemptAt ?? 0);
       this.nextPostAt = lastPost ? lastPost + this.gap() : 0;
       if (this.pending?.lastOutcome) {
@@ -466,7 +473,7 @@ export class CursorCollector {
       raw = undefined;
     }
     if (raw === null) return;
-    const pending = raw === undefined ? null : restorePending(raw, this.limits);
+    const pending = raw === undefined ? null : restorePending(raw, this.limits, policy);
     if (pending && pending.id === this.checkpoint.lastEnvelope) {
       // Answered and committed; only the removal of this file was interrupted.
       await remove(this.files.pending);
@@ -742,7 +749,7 @@ export class CursorCollector {
   /** Walk the window up to `limit`, building the envelope and the state its
    *  answer would commit. Stops early where the envelope is full. */
   private stage(entries: Entry[], limit: number): { logs: ImportLog[]; advance: CursorAdvance } {
-    const { limits } = this, context = new CursorContext(this.checkpoint.conversations, limits);
+    const { limits } = this, { policy } = this.options, context = new CursorContext(this.checkpoint.conversations, limits, policy);
     const offsets = { ...this.checkpoint.offsets }, inodes = { ...this.checkpoint.inodes };
     const counts = { spooled: 0, malformed: 0, expired: 0 }, logs: ImportLog[] = [];
     let bytes = this.envelopeBase;
@@ -757,7 +764,9 @@ export class CursorCollector {
       if (entry.kind === "record" && UPLOADED.has(entry.line.hook)) {
         if (logs.length >= limits.envelopeRecords) break;
         const attached = context.attach(entry.line, ahead(index + 1));
-        const log = frameCursorRecord(entry.line, this.options.policy, attached.context);
+        // A reply with neither text nor reasoning is consumed and not uploaded.
+        const empty = cursorReplyIsEmpty(entry.line, policy, attached.context);
+        const log = empty ? null : frameCursorRecord(entry.line, policy, attached.context);
         const size = log ? cursorRecordBytes(log) : 0;
         if (bytes + size > limits.frameBytes) break;
         attached.settle();
@@ -766,7 +775,8 @@ export class CursorCollector {
           logs.push(log);
           bytes += size;
           counts.spooled++;
-        } else counts.malformed++;
+        } else if (empty) counts.spooled++;
+        else counts.malformed++;
       } else if (entry.kind === "record") {
         context.observe(entry.line);
         counts.spooled++;

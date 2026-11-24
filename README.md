@@ -190,7 +190,7 @@ contexts use the established scope-v1 device flow.
 
 ## Cursor
 
-Cursor has no OpenTelemetry settings to write. Connect installs six hooks and a
+Cursor has no OpenTelemetry settings to write. Connect installs eight hooks and a
 background collector instead:
 
 ```sh
@@ -210,7 +210,7 @@ version, a per-user service manager, the paths it would use, and whether
 nothing. After approval it asks the ingest endpoint whether it accepts Cursor
 records, and stores nothing when the answer is no. Then, in this order, it writes
 its settings, installs the hook program, starts the collector (a systemd user
-service on Linux, a LaunchAgent on macOS) and adds one entry under each of six
+service on Linux, a LaunchAgent on macOS) and adds one entry under each of eight
 events in `~/.cursor/hooks.json`. Your other hooks are kept, and the file is copied
 once to `hooks.json.codetelemetry-backup` before the first edit. An install that
 fails part-way removes what it wrote, or puts the previous installation back. The
@@ -223,7 +223,7 @@ A new install sends everything in this table. Each flag turns one row off.
 | What is sent | Turn it off |
 | --- | --- |
 | Prompt length, tool names, durations, exit codes, sizes, models and token counts. | `cursor disable` |
-| Prompt text, the input of shell, read, write, search and task calls (commands, file paths, patterns and their options) and the workspace path, which gives a session its repository. Credential scrubbing is best effort: text in a known credential shape (key blocks, bearer and authorization values, assignments to secret-named variables, common token formats, passwords in URLs) is removed from prompts, and a tool input that holds such text, or a command that passes a password option, is withheld whole. A secret in a shape the patterns do not know is sent as typed, so pass `--no-enrich` where prompts or commands may carry secrets. | `--no-enrich` |
+| Prompt text, the reply of each turn and the model's reasoning. The input of shell, read, write, search and task calls (commands, file paths, patterns and their options), each tool's output, the error text of a failed call, the content of the files the agent reads and writes, and the workspace path, which gives a session its repository. A session then replays as the other assistants' sessions do: what was asked, what the model thought and answered, what each tool ran and returned. Tool output, error text and file content are cut to 8,192 characters each, a reply to 16,384, and reasoning to the newest 32 thoughts of a turn at 2,048 characters each. Credential scrubbing is best effort: text in a known credential shape (key blocks, bearer and authorization values, assignments to secret-named variables, common token formats, passwords in URLs) is replaced in prompts, replies, reasoning, tool output, error text and file content before anything is stored on disk, and a tool input that holds such text, or a command that passes a password option, is withheld whole, with the content a write carried. A secret in a shape the patterns do not know is sent as typed, so pass `--no-enrich` where prompts, commands, output or files may carry secrets. | `--no-enrich` |
 | Your Cursor account email, which puts your sessions under your name. | `--no-identity` |
 
 ```sh
@@ -235,12 +235,23 @@ flag keeps the stored choice, so an install made before these options were on by
 default stays as it was until you pass `--enrich` or `--identity`. `login` and
 `cursor status` print the current choice. With `--no-enrich` a session shows no
 repository, and with `--no-identity` no developer. Records captured while an
-option was on and not yet sent are reduced before they are sent. Headless runs (`cursor-agent -p`) report tools and
-durations, but no prompts and no tokens. Cursor's cloud and background agents do
+option was on and not yet sent are reduced before they are sent. Headless runs (`cursor-agent -p`) report tools, their
+output and durations, but no prompts, no replies and no tokens. Cursor's cloud and background agents do
 not run user-level hooks, so they report nothing.
 
+After upgrading Connect, run `login --client cursor` again. It installs the current
+hook program and adds the hook entries a newer version uses; until then
+`cursor status` reports that `hooks.json` holds only some of the entries, and the
+session parts the missing hooks supply (the reply and reasoning of a turn, the
+content of a file read) are not collected.
+
 The hook runs inside the editor, so it is small and cannot block it: it makes no
-network call, gives up after 1.5 seconds and always exits 0. It appends one record
+network call, gives up after 1.5 seconds and always exits 0. Cursor waits for an
+answer from one of the eight events, `beforeReadFile`, which is where it hands a
+hook the content of a file the agent reads. That entry runs `hook-read.sh`, which
+prints `{"permission":"allow"}` as its first act and then records the content, so
+the read goes ahead whatever happens to the recording; with `--no-enrich` it
+prints that line and starts nothing. The hook appends one record
 to a local spool; the collector sends the spool in batches, at most four requests
 a minute, so a turn reaches the dashboard about 15 to 35 seconds after it ends.
 Unsent records wait in the spool for up to 14 days. The spool holds at most
@@ -257,10 +268,10 @@ supported, and Connect does not detect one.
 | Path | Holds |
 | --- | --- |
 | `~/.config/codetelemetry/cursor-hooks-v1.json` (and `.previous`) | settings and the ingest key in plain text, mode 0600 |
-| `~/.local/share/codetelemetry/cursor-hooks-v1/` | `hook.sh`, `hook.cjs`, `collector.sh` and the collector's own copy of Connect |
-| `~/.local/state/codetelemetry/cursor-hooks-v1/` | the spool, the batch being sent, refused batches and collector state; these hold prompt text and commands unless you installed with `--no-enrich` |
+| `~/.local/share/codetelemetry/cursor-hooks-v1/` | `hook.sh`, `hook-read.sh`, `hook.cjs`, `collector.sh` and the collector's own copy of Connect |
+| `~/.local/state/codetelemetry/cursor-hooks-v1/` | the spool, the batch being sent, refused batches and collector state; these hold prompt and reply text, commands, tool output and file content unless you installed with `--no-enrich` |
 | `~/.config/systemd/user/codetelemetry-cursor-hooks.service` or `~/Library/LaunchAgents/com.codetelemetry.cursor-hooks.plist` | the collector service |
-| `~/.cursor/hooks.json` | six CodeTelemetry entries beside your own |
+| `~/.cursor/hooks.json` | eight CodeTelemetry entries beside your own |
 | `~/.cursor/hooks.json.codetelemetry-backup` | your file as it was before the first edit |
 
 ```sh
@@ -289,7 +300,7 @@ apart from removing its own entries.
   launcher it prints, `/bin/sh ~/.local/share/codetelemetry/cursor-hooks-v1/collector.sh`,
   under the host's own supervisor or in a terminal that stays open.
 - **A `hooks.json` Connect will not rewrite** (a symbolic link, or a file with
-  comments or trailing commas). The refusal prints the six entries;
+  comments or trailing commas). The refusal prints the eight entries;
   `--hooks-manual` installs everything except that edit.
 - **A Node.js upgrade removed the interpreter.** Hooks keep working through
   `PATH` and tell the collector where Node.js is now. `cursor status` then reports

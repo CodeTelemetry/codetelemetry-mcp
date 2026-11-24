@@ -1,5 +1,5 @@
 // The one edit Connect makes inside Cursor's own directory: one entry under each
-// of six events in the user's hooks.json. The file belongs to the user, so the
+// of eight events in the user's hooks.json. The file belongs to the user, so the
 // edit is made in the text, not by re-serializing: every byte Connect did not
 // add stays as it was, and removing the entries restores the bytes that were
 // there before. A file that cannot be edited that way is refused unchanged, with
@@ -8,7 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { isSafeCursorPath, syncCursorDirectory, writeCursorTemporary } from "./config.ts";
+import { cursorHookCommand, isSafeCursorPath, syncCursorDirectory, writeCursorTemporary } from "./config.ts";
 import { CURSOR_HOOK_EVENTS } from "./hookProgram.ts";
 
 /** An entry is Connect's when its command contains this. */
@@ -42,14 +42,17 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isOurs = (entry: unknown): boolean =>
   isRecord(entry) && typeof entry.command === "string" && entry.command.includes(CURSOR_HOOK_MARKER);
 
-const entryFor = (command: string) => ({ command, timeout: CURSOR_HOOK_TIMEOUT_SECONDS });
+/** Connect's entry under one event. `command` is the launcher's path; the
+ *  entry of `beforeReadFile` names the launcher beside it that answers Cursor. */
+const entryFor = (event: string, command: string) => ({ command: cursorHookCommand(event, command), timeout: CURSOR_HOOK_TIMEOUT_SECONDS });
+const spacedEntry = (event: string, command: string): string =>
+  `{ "command": ${JSON.stringify(cursorHookCommand(event, command))}, "timeout": ${CURSOR_HOOK_TIMEOUT_SECONDS} }`;
 
-/** The six entries as text to paste under "hooks" by hand. */
+/** The eight entries as text to paste under "hooks" by hand. */
 export function cursorHooksManualBlock(command: string): string {
-  const entry = `{ "command": ${JSON.stringify(command)}, "timeout": ${CURSOR_HOOK_TIMEOUT_SECONDS} }`;
   return [
     '"hooks": {',
-    CURSOR_HOOK_EVENTS.map(event => `  ${JSON.stringify(event)}: [${entry}]`).join(",\n"),
+    CURSOR_HOOK_EVENTS.map(event => `  ${JSON.stringify(event)}: [${spacedEntry(event, command)}]`).join(",\n"),
     "}",
   ].join("\n");
 }
@@ -58,7 +61,7 @@ function refuse(reason: CursorHooksRefusalReason, file: string, cause: string, c
   const manual = command === undefined ? "" : [
     "",
     "",
-    "To add the hooks yourself, put these six entries under \"hooks\" in that file. Where an event already has entries, add the CodeTelemetry entry to its list and keep yours:",
+    "To add the hooks yourself, put these eight entries under \"hooks\" in that file. Where an event already has entries, add the CodeTelemetry entry to its list and keep yours:",
     "",
     cursorHooksManualBlock(command),
     "",
@@ -334,7 +337,7 @@ const lineStart = (text: string, position: number): number => text.lastIndexOf("
 const lineIndent = (text: string, position: number): string => /^[ \t]*/.exec(text.slice(lineStart(text, position), position))![0];
 const opensLine = (text: string, position: number): boolean => /^[ \t]*$/.test(text.slice(lineStart(text, position), position));
 
-/** The text with Connect's entry appended under each of the six events, written
+/** The text with Connect's entry appended under each of the eight events, written
  *  the way the file is already written: its indentation and line ends where it
  *  spans lines, one line where it does not. `text` holds no entry of ours. */
 function withOurs(text: string, command: string): string {
@@ -346,15 +349,13 @@ function withOurs(text: string, command: string): string {
   const firstIndent = lineIndent(text, first.start);
   const unit = opensLine(text, first.start) && firstIndent.length > outerIndent.length && firstIndent.startsWith(outerIndent)
     ? firstIndent.slice(outerIndent.length) : "  ";
-  const inline = tight
-    ? JSON.stringify(entryFor(command))
-    : `{ "command": ${JSON.stringify(command)}, "timeout": ${CURSOR_HOOK_TIMEOUT_SECONDS} }`;
-  const block = (indent: string) => [
-    "{", `${indent}${unit}"command": ${JSON.stringify(command)},`, `${indent}${unit}"timeout": ${CURSOR_HOOK_TIMEOUT_SECONDS}`, `${indent}}`,
+  const inline = (event: string) => tight ? JSON.stringify(entryFor(event, command)) : spacedEntry(event, command);
+  const block = (event: string, indent: string) => [
+    "{", `${indent}${unit}"command": ${JSON.stringify(cursorHookCommand(event, command))},`, `${indent}${unit}"timeout": ${CURSOR_HOOK_TIMEOUT_SECONDS}`, `${indent}}`,
   ].join(newline);
   const blockMember = (event: string, indent: string) =>
-    `${JSON.stringify(event)}: [${newline}${indent}${unit}${block(indent + unit)}${newline}${indent}]`;
-  const inlineMember = (event: string) => `${JSON.stringify(event)}:${tight ? "" : " "}[${inline}]`;
+    `${JSON.stringify(event)}: [${newline}${indent}${unit}${block(event, indent + unit)}${newline}${indent}]`;
+  const inlineMember = (event: string) => `${JSON.stringify(event)}:${tight ? "" : " "}[${inline(event)}]`;
 
   const edits: Edit[] = [], added: string[] = [];
   for (const event of CURSOR_HOOK_EVENTS) {
@@ -368,12 +369,12 @@ function withOurs(text: string, command: string): string {
       // Insert after the last entry; the text between it and the bracket stays.
       if (text.slice(last.end, list.close).includes("\n")) {
         const indent = opensLine(text, last.start) ? lineIndent(text, last.start) : lineIndent(text, member.start) + unit;
-        edits.push({ start: last.end, end: last.end, text: `,${newline}${indent}${block(indent)}` });
-      } else edits.push({ start: last.end, end: last.end, text: `,${tight ? "" : " "}${inline}` });
+        edits.push({ start: last.end, end: last.end, text: `,${newline}${indent}${block(event, indent)}` });
+      } else edits.push({ start: last.end, end: last.end, text: `,${tight ? "" : " "}${inline(event)}` });
     } else if (text.includes("\n") && opensLine(text, member.start)) {
       const indent = lineIndent(text, member.start);
-      edits.push({ start: list.open + 1, end: list.close, text: `${newline}${indent}${unit}${block(indent + unit)}${newline}${indent}` });
-    } else edits.push({ start: list.open + 1, end: list.close, text: inline });
+      edits.push({ start: list.open + 1, end: list.close, text: `${newline}${indent}${unit}${block(event, indent + unit)}${newline}${indent}` });
+    } else edits.push({ start: list.open + 1, end: list.close, text: inline(event) });
   }
   const lastMember = hooks.items.at(-1);
   if (added.length && lastMember) {
@@ -395,7 +396,7 @@ function withOurs(text: string, command: string): string {
 
 function expectedWithOurs(text: string, command: string, created: CreatedKeys): HooksDocument {
   const document = expectedWithoutOurs(text, CURSOR_HOOK_EVENTS, created);
-  for (const event of CURSOR_HOOK_EVENTS) document.hooks[event] = [...(document.hooks[event] ?? []), entryFor(command)];
+  for (const event of CURSOR_HOOK_EVENTS) document.hooks[event] = [...(document.hooks[event] ?? []), entryFor(event, command)];
   return document;
 }
 
@@ -504,7 +505,7 @@ export type CursorHooksInstallResult = {
   createdKeys: string[];
 };
 
-/** Merge the six entries. Idempotent: a file that already holds them is not
+/** Merge the eight entries. Idempotent: a file that already holds them is not
  *  written. `createdKeys` is what the previous install returned; without it a
  *  key whose list holds only Connect's entries is taken for one Connect added. */
 export function installCursorHooks(opts: { hooksFile: string; command: string; createdKeys?: readonly string[] }): CursorHooksInstallResult {
@@ -600,16 +601,17 @@ export function removeCursorHooks(opts: { hooksFile: string; createdByConnect?: 
   }
 }
 
-/** Whether Cursor will run the hook: an entry under all six events, some, or
+/** Whether Cursor will run the hook: an entry under all eight events, some, or
  *  none. Read-only, so it follows a link and accepts comments, and a block the
- *  user pasted by hand counts. With `command`, only that exact command counts. */
+ *  user pasted by hand counts. With `command` (the launcher's path), only the
+ *  exact command of each event counts. */
 export function cursorHooksState(opts: { hooksFile: string; command?: string }): "installed" | "missing" | "partial" {
   const hooks = readLenient(opts.hooksFile) ?? {};
-  const matches = (entry: unknown) =>
-    opts.command === undefined ? isOurs(entry) : isRecord(entry) && entry.command === opts.command;
+  const matches = (event: string) => (entry: unknown) =>
+    opts.command === undefined ? isOurs(entry) : isRecord(entry) && entry.command === cursorHookCommand(event, opts.command);
   const present = CURSOR_HOOK_EVENTS.filter(event => {
     const entries = hooks[event];
-    return Array.isArray(entries) && entries.some(matches);
+    return Array.isArray(entries) && entries.some(matches(event));
   }).length;
   return present === CURSOR_HOOK_EVENTS.length ? "installed" : present === 0 ? "missing" : "partial";
 }

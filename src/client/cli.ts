@@ -22,7 +22,7 @@ import { CursorPreflightRefusal, cursorPreflight } from "./cursor/preflight.ts";
 import { spawn } from "node:child_process";
 import { onboard, type OnboardClient } from "./onboard.ts";
 import { resolveEndpoints, type SettingsScope } from "./config.ts";
-import { CLIENTS, CURSOR_SETUP_HINT, PI_EXTENSION_HINT } from "./clients.ts";
+import { CLIENTS, CURSOR_CAPTURE_HINT, CURSOR_SETUP_HINT, PI_EXTENSION_HINT } from "./clients.ts";
 import { ONBOARD_CLIENTS, isOnboardClient } from "./assistants.ts";
 import { looksLikeKey, mask } from "./keys.ts";
 import { runImport, runEstimate, type ImportRunResult } from "./import/run.ts";
@@ -232,21 +232,27 @@ import options:
   --json                 Emit the full result as JSON
 
 Cursor (--client cursor):
-  \`login --client cursor\` (or \`<cot_key> --client cursor\`) adds six entries to
+  \`login --client cursor\` (or \`<cot_key> --client cursor\`) adds eight entries to
   ~/.cursor/hooks.json (your other hooks are kept), installs a hook program
   and starts a background collector: a systemd user service on Linux, a
   LaunchAgent on macOS. Requires Node.js 24 or newer. Verified on Linux. macOS
   is in preview. Windows is not supported.
   Run it on the machine where the workspace lives: with Remote-SSH, WSL or a
   Dev Container, Cursor runs hooks on that host, not on your laptop.
-  A new install sends prompt text, tool commands, file paths, the workspace
-  path (which gives a session its repository) and your Cursor account email
+  A new install sends prompt text, the reply and the model's reasoning for
+  each turn, tool commands, tool output, the error text of a failed call,
+  file paths, the content of files read and written, the workspace path
+  (which gives a session its repository) and your Cursor account email
   (which puts sessions under your name), with prompt length, tool names,
   durations, exit codes, models and token counts. Headless runs
-  (cursor-agent -p) report tools and durations, but no prompts and no tokens.
-  --no-enrich / --enrich Stop sending prompt text, tool commands, file paths
-                         and the workspace path, or send them again. On by
-                         default for a new install; with neither flag an
+  (cursor-agent -p) report tools, their output and durations, but no prompts,
+  no replies and no tokens.
+  After upgrading Connect, run \`login --client cursor\` again: it installs
+  the current hook program and adds the hook entries a newer version uses.
+  --no-enrich / --enrich Stop sending prompt text, reply text, reasoning, tool
+                         commands, tool output, error text, file paths, file
+                         content and the workspace path, or send them again.
+                         On by default for a new install; with neither flag an
                          existing install keeps its stored choice. Text that
                          looks like a credential is scrubbed on a best-effort
                          basis; a secret in an unrecognized shape is sent.
@@ -257,7 +263,7 @@ Cursor (--client cursor):
   --hooks-only           Install no service, for a host without a per-user
                          service manager; run the printed launcher under your
                          own supervisor instead.
-  --hooks-manual         Do not edit hooks.json; print the six entries to
+  --hooks-manual         Do not edit hooks.json; print the eight entries to
                          paste by hand.
   --no-proxy-settings    Forget recorded proxy settings. Otherwise HTTPS_PROXY,
                          NO_PROXY and NODE_EXTRA_CA_CERTS are recorded from
@@ -872,7 +878,7 @@ export async function run(argv: string[], deps: RunDeps = {}): Promise<number> {
       ? CLIENTS.cursor.printConfig(resolveEndpoints(endpoints).ingestEndpoint, flags.enrich !== false, flags.identity !== false)
       : CLIENTS[client].printConfig(resolveEndpoints(endpoints).ingestEndpoint, !!flags.enrich));
     if (client === "pi") out(`\n${PI_EXTENSION_HINT}`);
-    if (client === "cursor") out(`\n${CURSOR_SETUP_HINT}`);
+    if (client === "cursor") out(`\n${CURSOR_SETUP_HINT}\n${CURSOR_CAPTURE_HINT}`);
     return 0;
   }
 
