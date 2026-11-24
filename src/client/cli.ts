@@ -52,7 +52,7 @@ import {
 
 /** The @codetelemetry/connect release this source is published as. Keep it in
  *  step with packages/connect/package.json; a test fails when they differ. */
-export const CONNECT_VERSION = "0.5.0";
+export const CONNECT_VERSION = "0.6.0";
 
 type Parsed = { _: string[]; flags: Record<string, string | boolean> };
 
