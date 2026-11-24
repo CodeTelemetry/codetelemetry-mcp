@@ -34,7 +34,8 @@ export type ClientDescriptor = {
   readKey(configPath: string): string | null;
   readSummary(configPath: string): ClientSummary;
   /** The config block with a placeholder key (print-config). */
-  printConfig(ingestEndpoint: string, enrich: boolean): string;
+  /** `identity` is read by Cursor only: whether the block sends the account email. */
+  printConfig(ingestEndpoint: string, enrich: boolean, identity?: boolean): string;
 };
 
 /** How Cursor is set up. Its settings file alone collects nothing: the hooks
@@ -73,10 +74,10 @@ export const CLIENTS: Readonly<Record<OnboardClient, ClientDescriptor>> = Object
     }),
     readKey: readCursorKey,
     readSummary: readCursorSummary,
-    printConfig: (ingestEndpoint, enrich) => JSON.stringify({
+    printConfig: (ingestEndpoint, enrich, identity = true) => JSON.stringify({
       kind: CURSOR_CONFIG_KIND, version: 1, enabled: true, key: "cot_<YOUR_INGEST_KEY>", ingestEndpoint,
       stateDir: "<HOME>/.local/state/codetelemetry/cursor-hooks-v1", content: { prompts: enrich, toolDetails: enrich },
-      identity: { email: false }, network: {}, node: { execPath: "<NODE>" }, hooksFile: "<HOME>/.cursor/hooks.json", createdByConnect: false,
+      identity: { email: identity }, network: {}, node: { execPath: "<NODE>" }, hooksFile: "<HOME>/.cursor/hooks.json", createdByConnect: false,
     }, null, 2),
   },
   claude: {

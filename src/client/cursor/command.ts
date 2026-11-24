@@ -34,7 +34,7 @@ type HooksState = "installed" | "missing" | "partial";
 const subcommand = (name: string, flag = ""): string => `${CURSOR_CLI} cursor ${name}${flag}`;
 const settingsFlag = (home: string, configPath: string): string => configPath === cursorPaths(home).config ? "" : ` --settings ${configPath}`;
 const NOT_SET_UP = `Cursor collection is not set up on this machine. Run: ${CURSOR_LOGIN_COMMAND}`;
-const CONTENT_NOTE = "holds prompt text and commands if --enrich was ever on";
+const CONTENT_NOTE = "holds prompt text and commands unless capture was always off (--no-enrich)";
 const SNAPSHOT_BYTES = 1024 * 1024;
 const LISTED_ENTRIES = 64;
 const RUNTIME = /^runtime-[a-f0-9]{16}(?:[.]tmp)?$/;
@@ -95,7 +95,7 @@ export async function checkCursorFormat(opts: {
 export type CursorInstallOptions = {
   key: string;
   ingestEndpoint: string;
-  /** true turns prompt and tool-detail capture on, false turns it off, undefined keeps the stored choice. */
+  /** true turns prompt and tool-detail capture on, false turns it off, undefined keeps the stored choice (on for a first install). */
   enrich?: boolean;
   /** The same three states for the Cursor account email. */
   identity?: boolean;

@@ -218,16 +218,24 @@ command then sends a test event, waits for it to arrive, and prints what it
 installed, where, the capture mode and how to remove it. The Cursor IDE picks the hooks up at once; restart any running
 `cursor-agent` session.
 
-| Option | What is sent |
-| --- | --- |
-| none (default) | Metadata only: prompt length, tool names, durations, exit codes, sizes, models and token counts. A session then shows no repository and no developer. |
-| `--enrich` | Also prompt text, the input of shell, read, write, search and task calls (commands, file paths, patterns and their options) and the workspace path, which gives a session its repository. Credential scrubbing is best effort: text in a known credential shape (key blocks, bearer and authorization values, assignments to secret-named variables, common token formats, passwords in URLs) is removed from prompts, and a tool input that holds such text, or a command that passes a password option, is withheld whole. A secret in a shape the patterns do not know is sent as typed, so leave `--enrich` off where prompts or commands may carry secrets. |
-| `--identity` | Also your Cursor account email, which puts your sessions under your name. |
+A new install sends everything in this table. Each flag turns one row off.
 
-File contents, command output, model replies and reasoning are never collected.
-`--no-enrich` and `--no-identity` turn an option off; with neither flag the current
-choice is kept. Records captured while an option was on and not yet sent are
-reduced before they are sent. Headless runs (`cursor-agent -p`) report tools and
+| What is sent | Turn it off |
+| --- | --- |
+| Prompt length, tool names, durations, exit codes, sizes, models and token counts. | `cursor disable` |
+| Prompt text, the input of shell, read, write, search and task calls (commands, file paths, patterns and their options) and the workspace path, which gives a session its repository. Credential scrubbing is best effort: text in a known credential shape (key blocks, bearer and authorization values, assignments to secret-named variables, common token formats, passwords in URLs) is removed from prompts, and a tool input that holds such text, or a command that passes a password option, is withheld whole. A secret in a shape the patterns do not know is sent as typed, so pass `--no-enrich` where prompts or commands may carry secrets. | `--no-enrich` |
+| Your Cursor account email, which puts your sessions under your name. | `--no-identity` |
+
+```sh
+npx -y @codetelemetry/connect login --client cursor --no-enrich --no-identity   # metadata only
+```
+
+`--enrich` and `--identity` turn an option back on. A later `login` with neither
+flag keeps the stored choice, so an install made before these options were on by
+default stays as it was until you pass `--enrich` or `--identity`. `login` and
+`cursor status` print the current choice. With `--no-enrich` a session shows no
+repository, and with `--no-identity` no developer. Records captured while an
+option was on and not yet sent are reduced before they are sent. Headless runs (`cursor-agent -p`) report tools and
 durations, but no prompts and no tokens. Cursor's cloud and background agents do
 not run user-level hooks, so they report nothing.
 
@@ -250,7 +258,7 @@ supported, and Connect does not detect one.
 | --- | --- |
 | `~/.config/codetelemetry/cursor-hooks-v1.json` (and `.previous`) | settings and the ingest key in plain text, mode 0600 |
 | `~/.local/share/codetelemetry/cursor-hooks-v1/` | `hook.sh`, `hook.cjs`, `collector.sh` and the collector's own copy of Connect |
-| `~/.local/state/codetelemetry/cursor-hooks-v1/` | the spool, the batch being sent, refused batches and collector state; with `--enrich` these hold prompt text and commands |
+| `~/.local/state/codetelemetry/cursor-hooks-v1/` | the spool, the batch being sent, refused batches and collector state; these hold prompt text and commands unless you installed with `--no-enrich` |
 | `~/.config/systemd/user/codetelemetry-cursor-hooks.service` or `~/Library/LaunchAgents/com.codetelemetry.cursor-hooks.plist` | the collector service |
 | `~/.cursor/hooks.json` | six CodeTelemetry entries beside your own |
 | `~/.cursor/hooks.json.codetelemetry-backup` | your file as it was before the first edit |

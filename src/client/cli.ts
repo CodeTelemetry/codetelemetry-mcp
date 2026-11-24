@@ -239,20 +239,21 @@ Cursor (--client cursor):
   is in preview. Windows is not supported.
   Run it on the machine where the workspace lives: with Remote-SSH, WSL or a
   Dev Container, Cursor runs hooks on that host, not on your laptop.
-  By default only metadata is collected: prompt length, tool names, durations,
-  exit codes, models and token counts. A session then shows no repository and
-  no developer. File contents, command output, model replies and reasoning are
-  never collected. Headless runs (cursor-agent -p) report tools and durations,
-  but no prompts and no tokens.
-  --enrich / --no-enrich Also send prompt text, tool commands, file paths and
-                         the workspace path (which gives a session its
-                         repository), or stop sending them. With neither
-                         flag the current choice is kept. Text that looks
-                         like a credential is scrubbed on a best-effort
+  A new install sends prompt text, tool commands, file paths, the workspace
+  path (which gives a session its repository) and your Cursor account email
+  (which puts sessions under your name), with prompt length, tool names,
+  durations, exit codes, models and token counts. Headless runs
+  (cursor-agent -p) report tools and durations, but no prompts and no tokens.
+  --no-enrich / --enrich Stop sending prompt text, tool commands, file paths
+                         and the workspace path, or send them again. On by
+                         default for a new install; with neither flag an
+                         existing install keeps its stored choice. Text that
+                         looks like a credential is scrubbed on a best-effort
                          basis; a secret in an unrecognized shape is sent.
-  --identity / --no-identity
-                         Also send your Cursor account email, or stop sending
-                         it. With neither flag the current choice is kept.
+  --no-identity / --identity
+                         Stop sending your Cursor account email, or send it
+                         again. On by default for a new install; with neither
+                         flag an existing install keeps its stored choice.
   --hooks-only           Install no service, for a host without a per-user
                          service manager; run the printed launcher under your
                          own supervisor instead.
@@ -386,7 +387,8 @@ const ESTIMATE_FLAGS = new Set(["json", "help", "h", "source", "since", "api-bas
 type CursorOptions = { enrich?: boolean; identity?: boolean; hooksOnly: boolean; hooksManual: boolean; clearNetwork: boolean };
 
 /** The Cursor install options. `--enrich` and `--identity` have three states:
- *  on, off (`--no-...`), or absent to keep the stored choice. A string is the
+ *  on, off (`--no-...`), or absent to keep the stored choice (on for a new
+ *  install). A string is the
  *  reason the flags cannot be used. */
 function cursorOptionsFromFlags(flags: Parsed["flags"]): CursorOptions | string {
   for (const name of ["enrich", "identity"]) {
@@ -865,7 +867,10 @@ export async function run(argv: string[], deps: RunDeps = {}): Promise<number> {
 
   // print-config: no key, no network.
   if (cmd === "print-config") {
-    out(CLIENTS[client].printConfig(resolveEndpoints(endpoints).ingestEndpoint, !!flags.enrich));
+    // Cursor prints what a new install stores: both options on unless turned off.
+    out(client === "cursor"
+      ? CLIENTS.cursor.printConfig(resolveEndpoints(endpoints).ingestEndpoint, flags.enrich !== false, flags.identity !== false)
+      : CLIENTS[client].printConfig(resolveEndpoints(endpoints).ingestEndpoint, !!flags.enrich));
     if (client === "pi") out(`\n${PI_EXTENSION_HINT}`);
     if (client === "cursor") out(`\n${CURSOR_SETUP_HINT}`);
     return 0;
