@@ -55,7 +55,7 @@ export type OnboardOptions = {
   kiroService?: KiroServiceOptions;
   /** Cursor only. `identity` sends the Cursor account email; like
    *  `settings.enrich` it is true, false, or undefined to keep the stored
-   *  choice. `hooksOnly` installs no service, `hooksManual` leaves hooks.json
+   *  choice (on for a first install). `hooksOnly` installs no service, `hooksManual` leaves hooks.json
    *  unedited, `clearNetwork` forgets recorded proxy settings. */
   cursor?: { identity?: boolean; hooksOnly?: boolean; hooksManual?: boolean; clearNetwork?: boolean; host?: CursorHost };
   /** Receives human-facing, already-masked progress lines. */

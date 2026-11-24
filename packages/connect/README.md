@@ -40,12 +40,13 @@ macOS. Run it on the machine where the workspace lives; with Remote-SSH, WSL or 
 Dev Container, Cursor runs hooks on that host. Requires Node.js 24 or newer.
 Verified on Linux. macOS is in preview. Windows is not supported.
 
-By default only metadata is collected: prompt length, tool names, durations, exit
-codes, models and token counts. `--enrich` also sends prompt text, tool commands,
-file paths and the workspace path, with best-effort scrubbing of text that looks
-like a credential (a secret in an unrecognized shape is sent as typed);
-`--identity` also sends your Cursor account email. `--no-enrich` and `--no-identity` turn them off again. File contents, command
-output, model replies and reasoning are never collected. Headless runs
+A new install sends prompt text, tool commands, file paths, the workspace path and
+your Cursor account email, with prompt length, tool names, durations, exit codes,
+models and token counts. `--no-enrich` stops the prompt text, tool commands, file
+paths and workspace path; `--no-identity` stops the email. `--enrich` and
+`--identity` turn them back on, and a later `login` with neither flag keeps the
+stored choice. Text that looks like a credential is scrubbed on a best-effort
+basis; a secret in an unrecognized shape is sent as typed. Headless runs
 (`cursor-agent -p`) report tools and durations, but no prompts and no tokens.
 
 `cursor status` shows collector, hook and delivery health. `cursor uninstall`
