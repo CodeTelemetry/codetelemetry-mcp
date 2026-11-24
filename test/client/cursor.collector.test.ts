@@ -135,16 +135,17 @@ test("the limits are the ones the wire contract names, and the cadence keeps a m
   assert.equal(CURSOR_SOURCE_EVENT, "cursor.source_record");
   assert.equal(CURSOR_SOURCE_SERVICE, "cursor");
   assert.deepEqual(CURSOR_SOURCE_SCOPE, { name: "codetelemetry-connect.cursor-hooks", version: "1" });
-  assert.deepEqual(CURSOR_UPLOADED_HOOKS, ["beforeSubmitPrompt", "stop", "postToolUse", "postToolUseFailure"]);
-  const { envelopeBytes, envelopeRecords, recordBytes, frameBytes, models, modelParams } = CURSOR_LIMITS;
-  assert.deepEqual({ envelopeBytes, envelopeRecords, recordBytes, frameBytes, models, modelParams },
-    { envelopeBytes: 262_144, envelopeRecords: 256, recordBytes: 32_768, frameBytes: 204_800, models: 4, modelParams: 8 });
+  assert.deepEqual(CURSOR_UPLOADED_HOOKS, ["beforeSubmitPrompt", "stop", "postToolUse", "postToolUseFailure", "afterAgentResponse"]);
+  const { envelopeBytes, envelopeRecords, recordBytes, frameBytes, models, modelParams, replyThoughts } = CURSOR_LIMITS;
+  assert.deepEqual({ envelopeBytes, envelopeRecords, recordBytes, frameBytes, models, modelParams, replyThoughts },
+    { envelopeBytes: 262_144, envelopeRecords: 256, recordBytes: 65_536, frameBytes: 204_800, models: 4, modelParams: 8, replyThoughts: 32 });
+  assert.equal(CURSOR_HOOK_LIMITS.recordBytes, CURSOR_LIMITS.recordBytes, "the hook and the collector bound a record alike");
   const { tickMs, settleMs, lingerMs, lingerRecords, postGapMs, postJitterMs, expireMs } = CURSOR_LIMITS;
   assert.deepEqual({ tickMs, settleMs, lingerMs, lingerRecords, postGapMs, postJitterMs, expireMs },
     { tickMs: 2000, settleMs: 2000, lingerMs: 15_000, lingerRecords: 64, postGapMs: 15_000, postJitterMs: 3000, expireMs: 14 * DAY });
-  const { readBytes, recordsPerTick, tickBudgetMs, conversations, thoughts, sandboxFlags } = CURSOR_LIMITS;
-  assert.deepEqual({ readBytes, recordsPerTick, tickBudgetMs, conversations, thoughts, sandboxFlags },
-    { readBytes: 2 * 1024 * 1024, recordsPerTick: 256, tickBudgetMs: 500, conversations: 64, thoughts: 16, sandboxFlags: 32 });
+  const { readBytes, recordsPerTick, tickBudgetMs, conversations, thoughts, sandboxFlags, reads } = CURSOR_LIMITS;
+  assert.deepEqual({ readBytes, recordsPerTick, tickBudgetMs, conversations, thoughts, sandboxFlags, reads },
+    { readBytes: 2 * 1024 * 1024, recordsPerTick: 256, tickBudgetMs: 500, conversations: 64, thoughts: 64, sandboxFlags: 32, reads: 8 });
   const { checkpointBytes, pendingBytes, healthBytes, rejectedBytes, quarantineMs, reframeMs, slowRetryMs, rejectedRetryMs } = CURSOR_LIMITS;
   assert.deepEqual({ checkpointBytes, pendingBytes, healthBytes, rejectedBytes, quarantineMs, reframeMs, slowRetryMs, rejectedRetryMs },
     { checkpointBytes: 1024 * 1024, pendingBytes: 1024 * 1024, healthBytes: 16 * 1024, rejectedBytes: 16 * 1024 * 1024, quarantineMs: DAY,
@@ -247,7 +248,9 @@ for (const [mode, policy] of [["metadata only", METADATA], ["every option on", E
     }
     const lines = fs.readdirSync(h.files.spool).sort().flatMap(name => fs.readFileSync(path.join(h.files.spool, name), "utf8").split("\n").filter(Boolean))
       .map(text => JSON.parse(text) as CursorSpoolLine);
-    assert.equal(lines.length, Object.keys(events).length);
+    // A reply and a file read are kept for their content only.
+    assert.equal(lines.length, Object.keys(events).length - (policy.prompts ? 0 : 2));
+    assert.equal(lines.some(line => line.hook === "afterAgentResponse" || line.hook === "beforeReadFile"), policy.prompts);
     assert.equal(fs.existsSync(h.files.dropped), false);
     // The capture times are real, so the collector's clock starts after them.
     h.clock.now = Date.now() + 30 * SECOND;
@@ -259,11 +262,14 @@ for (const [mode, policy] of [["metadata only", METADATA], ["every option on", E
     // Byte for byte: the collector's allow-list is the hook's, key order included.
     assert.deepEqual(rows.map(row => JSON.stringify(row.payload)), uploaded.map(line => JSON.stringify(line.payload)));
     assert.equal(rows.some(row => "prompt" in row.payload || "tool_input" in row.payload || "workspace_root" in row.payload || "user_email" in row.payload), policy.prompts);
-    // In the fixture the shell execution follows its tool record, and two thoughts precede the stop.
+    // In the fixture the shell execution and the file read follow their tool records, two
+    // thoughts with one text precede the stop, and the reply follows it.
     assert.deepEqual(rows.filter(row => Object.keys(row.context).length).map(row => [row.hook, row.payload.tool_name, row.context]), [
+      ...(policy.toolDetails ? [["postToolUse", "Read", { read: { content: "CANARY_READ_CONTENT export const helper = 1;\n" } }]] : []),
       ["postToolUse", "Shell", { shell: { sandbox: true } }],
       ["stop", undefined, { models: [{ model: "synthetic-model-high", model_id: "synthetic-model",
         model_params: [{ id: "effort", value: "high" }, { id: "speed", value: "default" }] }, { model: "default" }] }],
+      ...(policy.prompts ? [["afterAgentResponse", undefined, { thoughts: [{ text: "CANARY_THOUGHT the helper is used in two modules" }] }]] : []),
     ]);
     assert.deepEqual([health.recordsSpooled, health.recordsAcknowledged, health.recordsMalformed, health.backlogBytes, health.hookDrops], [lines.length, uploaded.length, 0, 0, 0]);
     assert.deepEqual(h.checkpoint().conversations.map((conversation: any) => [conversation.thoughts, conversation.sandbox, conversation.used]), [[[], [], undefined]]);
@@ -824,9 +830,9 @@ test("a prompt the hook cut to fill the line bound exactly is uploaded whole, in
   const h = harness(t, { policy: EVERYTHING }), at = START - MINUTE, id = "a".repeat(32);
   const lineOf = (text: string) => h.line("beforeSubmitPrompt", prompt(TURN, { prompt: text }), { at, p: EVERYTHING, id });
   // Three bytes a character, as in a long prompt that is not ASCII: the line and its newline fill the bound.
-  const room = CURSOR_HOOK_LIMITS.lineBytes - 1 - Buffer.byteLength(lineOf(""));
+  const room = CURSOR_HOOK_LIMITS.promptLineBytes - 1 - Buffer.byteLength(lineOf(""));
   const text = String.fromCodePoint(0x4e16).repeat(Math.floor(room / 3)) + "x".repeat(room % 3);
-  assert.equal(Buffer.byteLength(lineOf(text)) + 1, CURSOR_HOOK_LIMITS.lineBytes);
+  assert.equal(Buffer.byteLength(lineOf(text)) + 1, CURSOR_HOOK_LIMITS.promptLineBytes);
   h.append(lineOf(text), at);
   const collector = await h.start();
   const health = await collector.tick();
@@ -834,7 +840,7 @@ test("a prompt the hook cut to fill the line bound exactly is uploaded whole, in
   assert.deepEqual([health.recordsMalformed, health.recordsAcknowledged, health.backlogBytes], [0, 1, 0]);
   const record = JSON.parse(h.requests[0]!.body).resourceLogs[0].scopeLogs[0].logRecords[0].attributes
     .find((attribute: any) => attribute.key === "cursor.source.record").value.stringValue;
-  assert.ok(Buffer.byteLength(record) < CURSOR_LIMITS.recordBytes, "a record is smaller than the line it came from");
+  assert.ok(Buffer.byteLength(record) < 32 * 1024, "a prompt record stays inside the record bound of every service release");
 });
 
 test("the state files stay inside their bounds in the worst case for escaping", async t => {
@@ -865,44 +871,26 @@ test("the state files stay inside their bounds in the worst case for escaping", 
   assert.ok(fs.statSync(h.files.checkpoint).size <= CURSOR_LIMITS.checkpointBytes);
 });
 
-test("a record its context takes past the record bound is skipped and counted, and its neighbours are delivered", async t => {
-  const h = harness(t), at = START - MINUTE;
-  // Control characters take six bytes each in JSON; only such a turn can outgrow the bound.
-  const control = (length: number) => "\u0001".repeat(length);
-  const pair = { id: control(64), value: control(64) };
-  h.append([
-    h.line("beforeSubmitPrompt", prompt(), { at }),
-    ...Array.from({ length: 4 }, (_, index) => h.line("afterAgentThought", thought(`${TURN}-${index}-x`, `${control(127)}${index}`,
-      { model_id: control(128), model_params: Array.from({ length: 8 }, () => pair) }), { at })),
-    h.line("stop", stop(TURN, { model: control(128), model_id: control(128), status: control(64) }), { at }),
-    h.line("stop", stop(NEXT_TURN), { at }),
-  ], at);
-  const collector = await h.start();
-  const health = await collector.tick();
-  assert.deepEqual(h.sent(0).map(row => [row.hook, row.payload.generation_id]), [["beforeSubmitPrompt", TURN], ["stop", NEXT_TURN]]);
-  assert.deepEqual([health.recordsMalformed, health.recordsSpooled, health.recordsAcknowledged, health.backlogBytes], [1, 6, 2, 0]);
-});
-
 test("context memory is bounded per conversation, in conversations and in bytes, least recently used first to go", async t => {
   const h = harness(t), at = START - MINUTE;
   const huge = { id: "p".repeat(64), value: "v".repeat(64) };
   const big = (index: number) => thought(`g-${index}-${"g".repeat(240)}`, `${"m".repeat(120)}-${index}`, { model_id: "i".repeat(128), model_params: Array.from({ length: 8 }, () => huge) });
   const lines: string[] = [];
   for (let conversation = 0; conversation < 70; conversation++) {
-    for (let index = 0; index < 20; index++) lines.push(h.line("afterAgentThought", big(index), { at, conversation: `conversation-${conversation}` }));
+    for (let index = 0; index < 70; index++) lines.push(h.line("afterAgentThought", big(index), { at, conversation: `conversation-${conversation}` }));
     for (let index = 0; index < 40; index++) lines.push(h.line("afterShellExecution", shell(`id-${index}-${"s".repeat(480)}`, true), { at, conversation: `conversation-${conversation}` }));
   }
   h.append(lines, at);
   const collector = await h.start();
   let health = await run(h, collector, 2 * MINUTE);
-  assert.deepEqual([health.recordsSpooled, health.backlogBytes, h.requests.length], [70 * 60, 0, 0]);
+  assert.deepEqual([health.recordsSpooled, health.backlogBytes, h.requests.length], [70 * 110, 0, 0]);
   const saved = h.checkpoint().conversations as Array<{ id: string; thoughts: Array<{ generation_id: string }>; sandbox: Array<[string, boolean]> }>;
   assert.ok(saved.length < CURSOR_LIMITS.conversations, "the byte bound bites before the count does here");
   assert.ok(Buffer.byteLength(JSON.stringify(saved)) <= CURSOR_LIMITS.contextBytes);
   assert.ok(fs.statSync(h.files.checkpoint).size <= CURSOR_LIMITS.checkpointBytes);
   assert.equal(saved.at(-1)!.id, "conversation-69", "the most recently used survive");
   for (const conversation of saved) {
-    assert.deepEqual(conversation.thoughts.map(item => item.generation_id.split("-")[1]), Array.from({ length: 16 }, (_, index) => String(index + 4)), "the newest sixteen");
+    assert.deepEqual(conversation.thoughts.map(item => item.generation_id.split("-")[1]), Array.from({ length: 64 }, (_, index) => String(index + 6)), "the newest sixty-four");
     assert.equal(conversation.sandbox.length, 32);
     assert.equal(conversation.sandbox[0]![0].slice(0, 5), "id-8-");
   }
@@ -1551,15 +1539,27 @@ test("the health file is a fixed set of counters and names, private and bounded"
 
 test("saved context is rebuilt field by field: a wrong structure is refused and nothing unknown is carried", () => {
   const saved = [{ id: "c-1", prompt: "turn-1", thoughts: [{ generation_id: "turn-1-0", model: "m", prior: true, text: "CANARY" }], sandbox: [["tool-1", true]], used: ["0".repeat(32)], note: "CANARY" }];
-  assert.deepEqual(new CursorContext(saved).snapshot(), [{ id: "c-1", prompt: "turn-1", thoughts: [{ generation_id: "turn-1-0", model: "m", prior: true }], sandbox: [["tool-1", true]], used: ["0".repeat(32)] }]);
+  const kept = { id: "c-1", prompt: "turn-1", thoughts: [{ generation_id: "turn-1-0", model: "m", prior: true }], sandbox: [["tool-1", true]], used: ["0".repeat(32)] };
+  assert.deepEqual(new CursorContext(saved).snapshot(), [{ ...kept, thoughts: [{ generation_id: "turn-1-0", model: "m", text: "CANARY", prior: true }] }]);
+  // Reasoning text and file content are held only while their option is on.
+  const held = [{ ...saved[0]!, thoughts: [...saved[0]!.thoughts, { generation_id: "turn-1-1", text: "CANARY only text" }, { generation_id: "turn-1-2", model: "m", text: "CANARY", done: true }],
+    reads: [["tool-2", "CANARY file"]] }];
+  assert.deepEqual(new CursorContext(held).snapshot()[0]!.reads, [["tool-2", "CANARY file"]]);
+  assert.equal(new CursorContext(held).snapshot()[0]!.thoughts.length, 3);
+  assert.deepEqual(new CursorContext(held, CURSOR_LIMITS, { prompts: false, toolDetails: false }).snapshot(), [kept]);
+  assert.deepEqual(new CursorContext(held, CURSOR_LIMITS, { prompts: true, toolDetails: false }).snapshot()[0]!.reads, undefined);
+  assert.doesNotMatch(JSON.stringify(new CursorContext(held, CURSOR_LIMITS, { prompts: false, toolDetails: true }).snapshot()[0]!.thoughts), /CANARY/);
   assert.deepEqual(new CursorContext().snapshot(), []);
   for (const wrong of [
     {}, [null], [{ id: "has space", thoughts: [], sandbox: [] }], [{ id: "c", thoughts: [], sandbox: [] }, { id: "c", thoughts: [], sandbox: [] }],
     [{ id: "c", thoughts: [{}], sandbox: [] }], [{ id: "c", thoughts: [{ model: "m", prior: false }], sandbox: [] }], [{ id: "c", thoughts: [], sandbox: [["tool-1"]] }],
     [{ id: "c", thoughts: [], sandbox: [["tool-1", "yes"]] }], [{ id: "c", thoughts: [], sandbox: [], used: ["not an id"] }], [{ id: "c", prompt: "", thoughts: [], sandbox: [] }],
+    [{ id: "c", thoughts: [{ model: "m", done: false }], sandbox: [] }], [{ id: "c", thoughts: [{ text: "x".repeat(2049) }], sandbox: [] }],
+    [{ id: "c", thoughts: [], sandbox: [], reads: {} }], [{ id: "c", thoughts: [], sandbox: [], reads: [["tool-1"]] }],
+    [{ id: "c", thoughts: [], sandbox: [], reads: [["tool-1", 7]] }], [{ id: "c", thoughts: [], sandbox: [], reads: [["tool-1", "x".repeat(8193)]] }],
   ]) assert.throws(() => new CursorContext(wrong), /invalid Cursor checkpoint context/, JSON.stringify(wrong));
   // A count above today's bound keeps the newest entries instead of failing an upgrade.
-  const many = Array.from({ length: 40 }, (_, index) => ({ model: `m-${index}` }));
+  const many = Array.from({ length: 80 }, (_, index) => ({ model: `m-${index}` }));
   assert.deepEqual(new CursorContext([{ id: "c", thoughts: many, sandbox: [] }]).snapshot()[0]!.thoughts, many.slice(-CURSOR_LIMITS.thoughts));
 });
 
@@ -1778,4 +1778,412 @@ test("the collector withholds a command the stricter patterns catch, whatever ho
   assert.ok(!h.requests[0]!.body.includes(secret), "no form of the secret leaves the machine");
   assert.deepEqual(h.sent(0).map(row => row.payload.tool_input), [...commands.map(() => undefined), { command: "mkdir -p out && npm test", cwd: "/srv/kept" }, undefined]);
   assert.ok(!("workspace_root" in h.sent(0).at(-1)!.payload));
+});
+
+// ---- Content: reply and reasoning text, tool output, failure text, file content ----
+
+const CONTENT: CursorPolicy = { prompts: true, toolDetails: true, email: false };
+const reply = (turn = TURN, extra: Record<string, unknown> = {}) => ({
+  generation_id: turn, model: "default", cursor_version: CURSOR_VERSION,
+  input_tokens: 31744, output_tokens: 512, cache_read_tokens: 30720, cache_write_tokens: 0, ...extra,
+});
+const fileRead = (id: string, content: unknown) => ({ tool_use_id: id, content });
+const PAIR = String.fromCodePoint(0x1f600);
+/** The `cursor.source.record` strings of one request body, as sent. */
+const sourceRecords = (body: string): string[] => JSON.parse(body).resourceLogs[0].scopeLogs[0].logRecords
+  .map((row: any) => row.attributes.find((attribute: any) => attribute.key === "cursor.source.record").value.stringValue);
+const savedContext = (h: Harness): Array<Record<string, any>> => h.checkpoint().conversations;
+
+test("a reply carries its text and the reasoning of its own turn: by turn key, one entry per distinct text, in capture order", async t => {
+  const h = harness(t, { policy: CONTENT }), at = START - MINUTE, p = CONTENT;
+  h.append([
+    h.line("beforeSubmitPrompt", prompt(), { at, p }),
+    // Cursor fires a thought twice: once with the resolved model and a suffixed id, once as "default".
+    h.line("afterAgentThought", thought(`${TURN}-0-ab12`, "synthetic-model-high", { text: "first thought" }), { at: at + 1, p }),
+    h.line("afterAgentThought", thought(TURN, "default", { text: "first thought" }), { at: at + 2, p }),
+    h.line("afterAgentThought", thought(`${NEXT_TURN}-0-cd34`, "synthetic-other", { text: "a thought of another turn" }), { at: at + 3, p }),
+    h.line("afterAgentThought", thought(`${TURN}-1-ef56`, "synthetic-model-high", { text: "second thought" }), { at: at + 4, p }),
+    h.line("afterAgentThought", thought(TURN, "default", { text: "second thought" }), { at: at + 5, p }),
+    h.line("afterAgentThought", thought(`${TURN}-2-ab78`, "synthetic-model-high"), { at: at + 6, p }),
+    h.line("afterAgentThought", thought(`${TURN}-3-ab90`, "synthetic-model-high", { text: "first thought" }), { at: at + 7, p }),
+    h.line("stop", stop(), { at: at + 8, p }),
+    h.line("afterAgentResponse", reply(TURN, { text: "the reply of the turn", status: "CANARY", prompt: "CANARY", note: "CANARY" }), { at: at + 9, p }),
+  ], at);
+  const collector = await h.start();
+  await collector.tick();
+  const rows = h.sent(0);
+  assert.deepEqual(rows.map(row => row.hook), ["beforeSubmitPrompt", "stop", "afterAgentResponse"]);
+  assert.deepEqual(rows[1]!.context, { models: [{ model: "default" }, { model: "synthetic-model-high" }] }, "the stop still takes its models from the same thoughts");
+  assert.deepEqual(rows[2]!.payload, reply(TURN, { text: "the reply of the turn" }), "the reply text, the four counters and the common keys; nothing else");
+  assert.deepEqual(rows[2]!.context, { thoughts: [{ text: "first thought" }, { text: "second thought" }] });
+  assert.doesNotMatch(h.requests[0]!.body, /CANARY|another turn/);
+  // The other turn's thought waits for its own reply and stop, and nothing else is left.
+  assert.deepEqual(savedContext(h).map(conversation => conversation.thoughts.map((item: any) => [item.generation_id, item.text])),
+    [[[`${NEXT_TURN}-0-cd34`, "a thought of another turn"]]]);
+
+  // The reply first, then the stop: each still gets its part.
+  h.clock.now += MINUTE;
+  h.append([
+    h.line("afterAgentResponse", reply(NEXT_TURN, { text: "the next reply" }), { at: h.clock.now - 30 * SECOND, p }),
+    h.line("stop", stop(NEXT_TURN), { at: h.clock.now - 30 * SECOND + 1, p }),
+  ]);
+  await collector.tick();
+  assert.deepEqual(h.sent(1).map(row => [row.hook, row.context]), [
+    ["afterAgentResponse", { thoughts: [{ text: "a thought of another turn" }] }],
+    ["stop", { models: [{ model: "synthetic-other" }] }],
+  ]);
+  assert.deepEqual(savedContext(h), [{ id: CONVERSATION, prompt: TURN, thoughts: [], sandbox: [] }]);
+});
+
+test("a thought that reaches the spool after its reply is still attached, gives the stop its model, and is not kept afterwards", async t => {
+  const h = harness(t, { policy: CONTENT }), at = START - MINUTE, p = CONTENT;
+  h.append([
+    h.line("afterAgentResponse", reply(TURN, { text: "the reply" }), { at, p }),
+    h.line("afterAgentThought", thought(`${TURN}-0-ab12`, "synthetic-model-high", { text: "a late thought" }), { at: at + 1, p }),
+    h.line("stop", stop(), { at: at + 2, p }),
+    // And the other way round: the stop first, the thought after it, the reply last.
+    h.line("stop", stop(NEXT_TURN), { at: at + 3, p }),
+    h.line("afterAgentThought", thought(`${NEXT_TURN}-0-cd34`, "synthetic-other", { text: "another late thought" }), { at: at + 4, p }),
+    h.line("afterAgentResponse", reply(NEXT_TURN), { at: at + 5, p }),
+  ], at);
+  const collector = await h.start();
+  await collector.tick();
+  assert.deepEqual(h.sent(0).map(row => [row.hook, row.payload.generation_id, row.context]), [
+    ["afterAgentResponse", TURN, { thoughts: [{ text: "a late thought" }] }],
+    ["stop", TURN, { models: [{ model: "synthetic-model-high" }] }],
+    ["stop", NEXT_TURN, { models: [{ model: "synthetic-other" }] }],
+    ["afterAgentResponse", NEXT_TURN, { thoughts: [{ text: "another late thought" }] }],
+  ]);
+  assert.ok(!("text" in h.sent(0)[3]!.payload), "a reply may carry reasoning alone");
+  assert.deepEqual(savedContext(h), []);
+});
+
+test("a reply keeps the newest thirty-two thoughts, each inside its cut, and a turn with thoughts and no reply sends none", async t => {
+  const h = harness(t, { policy: CONTENT }), at = START - MINUTE, p = CONTENT;
+  h.append([
+    ...Array.from({ length: 40 }, (_, index) => h.line("afterAgentThought", thought(`${TURN}-${index}-x`, "synthetic-model", { text: `thought ${index}` }), { at: at + index, p })),
+    // Text over the cut was not written by the hook; it is not sent.
+    h.line("afterAgentThought", thought(`${TURN}-40-x`, "synthetic-model", { text: "x".repeat(CURSOR_HOOK_LIMITS.thoughtChars + 1) }), { at: at + 40, p }),
+    h.line("afterAgentThought", thought(`${TURN}-41-x`, "synthetic-model", { text: "y".repeat(CURSOR_HOOK_LIMITS.thoughtChars) }), { at: at + 41, p }),
+    h.line("afterAgentResponse", reply(TURN, { text: "r".repeat(CURSOR_HOOK_LIMITS.replyChars) }), { at: at + 42, p }),
+    h.line("afterAgentResponse", reply(NEXT_TURN, { text: "r".repeat(CURSOR_HOOK_LIMITS.replyChars + 1) }), { at: at + 43, p }),
+    // A turn whose thoughts have no reply: the stop is sent with its models and no reasoning.
+    h.line("afterAgentThought", thought("turn-without-reply-0", "synthetic-model", { text: "never sent" }), { at: at + 44, p }),
+    h.line("stop", stop("turn-without-reply"), { at: at + 45, p }),
+  ], at);
+  const collector = await h.start();
+  const health = await collector.tick();
+  const rows = h.sent(0);
+  assert.deepEqual(rows.map(row => [row.hook, row.payload.generation_id]), [["afterAgentResponse", TURN], ["stop", "turn-without-reply"]]);
+  assert.deepEqual(rows[0]!.context.thoughts.map((item: any) => item.text),
+    [...Array.from({ length: 31 }, (_, index) => `thought ${index + 9}`), "y".repeat(CURSOR_HOOK_LIMITS.thoughtChars)]);
+  assert.equal(rows[0]!.payload.text.length, CURSOR_HOOK_LIMITS.replyChars);
+  assert.deepEqual(Object.keys(rows[1]!.context), ["models"]);
+  assert.doesNotMatch(h.requests[0]!.body, /never sent/);
+  // The reply whose text was over its cut had nothing left to carry.
+  assert.deepEqual([health.recordsSpooled, health.recordsAcknowledged, health.recordsMalformed], [46, 2, 0]);
+});
+
+test("a reply left with neither text nor reasoning is not uploaded", async t => {
+  const h = harness(t, { policy: CONTENT }), at = START - MINUTE, p = CONTENT;
+  h.append([h.line("afterAgentResponse", reply(), { at, p }), h.line("afterAgentResponse", reply(NEXT_TURN, { text: "" }), { at, p })], at);
+  const collector = await h.start();
+  let health = await collector.tick();
+  assert.equal(h.requests.length, 0, "nothing to send, so no request");
+  assert.deepEqual([health.recordsSpooled, health.recordsMalformed, health.recordsAcknowledged, health.backlogBytes, health.status], [2, 0, 0, 0, "idle"]);
+  // Beside records that are sent, it is consumed and left out.
+  h.clock.now += MINUTE;
+  const now = h.clock.now - 30 * SECOND;
+  h.append([
+    h.line("stop", stop(), { at: now, p }),
+    h.line("afterAgentResponse", reply(), { at: now, p }),
+    h.line("afterAgentResponse", reply("a-turn-with-text", { text: "text alone" }), { at: now, p }),
+    // The text was captured while the option was off for the line.
+    h.line("afterAgentResponse", reply("a-turn-captured-without-the-option", { text: "CANARY" }), { at: now, p: { toolDetails: true } }),
+  ]);
+  health = await collector.tick();
+  assert.deepEqual(h.sent(0).map(row => [row.hook, row.payload.generation_id, row.payload.text, row.context]),
+    [["stop", TURN, undefined, {}], ["afterAgentResponse", "a-turn-with-text", "text alone", {}]]);
+  assert.deepEqual([health.recordsSpooled, health.recordsMalformed, health.recordsAcknowledged], [6, 0, 2]);
+  assert.doesNotMatch(h.requests[0]!.body, /CANARY/);
+});
+
+test("the content a file read returned goes on the Read record of the same call, whichever was written first, and is then forgotten", async t => {
+  const h = harness(t, { policy: CONTENT }), at = START - MINUTE, p = CONTENT;
+  const first = "call-aaaa-0\nfc_bbbb_0", second = "call-aaaa-1\nfc_bbbb_1", reused = "call-aaaa-2\nfc_bbbb_2";
+  h.append([
+    h.line("beforeReadFile", { ...fileRead(first, "content read first\n"), file_path: "/srv/fixture/CANARY.ts" }, { at, p }),
+    h.line("postToolUse", tool("Read", first), { at: at + 5, p }),
+    // The tool record reached the spool before the read did.
+    h.line("postToolUse", tool("Read", second), { at: at + 10, p }),
+    h.line("beforeReadFile", fileRead(second, "content read second\n"), { at: at + 11, p }),
+    // Cursor reuses one raw id across calls of different tools: only the Read takes the content.
+    h.line("beforeReadFile", fileRead(reused, "content of the reused id\n"), { at: at + 20, p }),
+    h.line("postToolUse", tool("Write", reused), { at: at + 21, p }),
+    h.line("postToolUseFailure", tool("Read", reused, { failure_type: "error" }), { at: at + 22, p }),
+    h.line("postToolUse", tool("Read", reused), { at: at + 23, p }),
+    h.line("postToolUse", tool("Read", reused), { at: at + 24, p }),
+    // No read for this call, and a read whose call never arrives.
+    h.line("postToolUse", tool("Read", "call-without-a-read"), { at: at + 30, p }),
+    h.line("beforeReadFile", fileRead("read-without-a-call", "kept until its call or its turn to go\n"), { at: at + 31, p }),
+  ], at);
+  const collector = await h.start();
+  await collector.tick();
+  assert.deepEqual(h.sent(0).map(row => [row.payload.tool_name, row.payload.tool_use_id, row.context]), [
+    ["Read", first, { read: { content: "content read first\n" } }],
+    ["Read", second, { read: { content: "content read second\n" } }],
+    ["Write", reused, {}],
+    ["Read", reused, {}],
+    ["Read", reused, { read: { content: "content of the reused id\n" } }],
+    ["Read", reused, {}],
+    ["Read", "call-without-a-read", {}],
+  ]);
+  assert.doesNotMatch(h.requests[0]!.body, /CANARY/, "the path of a read is not sent with its content");
+  assert.deepEqual(savedContext(h), [{ id: CONVERSATION, thoughts: [], sandbox: [], reads: [["read-without-a-call", "kept until its call or its turn to go\n"]] }]);
+
+  // A shell call's sandbox flag and a read's content sit side by side on a Read record that has both.
+  h.clock.now += MINUTE;
+  const now = h.clock.now - 30 * SECOND;
+  h.append([
+    h.line("afterShellExecution", shell("both", true), { at: now, p }),
+    h.line("beforeReadFile", fileRead("both", "both\n"), { at: now, p }),
+    h.line("postToolUse", tool("Read", "both"), { at: now + 1, p }),
+    ...Array.from({ length: 12 }, (_, index) => h.line("beforeReadFile", fileRead(`unclaimed-${index}`, `content ${index}`), { at: now + 2, p })),
+  ]);
+  await collector.tick();
+  assert.deepEqual(h.sent(1).map(row => row.context), [{ shell: { sandbox: true }, read: { content: "both\n" } }]);
+  assert.deepEqual(savedContext(h)[0]!.reads.map((item: [string, string]) => item[0]), Array.from({ length: 8 }, (_, index) => `unclaimed-${index + 4}`), "the newest eight wait");
+});
+
+test("tool output, failure text and written content are sent under the tool-details option, each inside its cut", async t => {
+  const h = harness(t, { policy: CONTENT }), at = START - MINUTE, p = CONTENT;
+  const max = CURSOR_HOOK_LIMITS.contentChars, input = { file_path: "/srv/fixture/repo-alpha/a.ts" };
+  h.append([
+    h.line("postToolUse", tool("Shell", "s-1", { output: "2 passing\n", result: { exit_code: 0, output_bytes: 10 }, tool_input: { command: "npm test" } }), { at, p }),
+    h.line("postToolUseFailure", tool("Shell", "s-2", { failure_type: "error", error_bytes: 16, error_message: "command exited 1", output: "CANARY not a failure key" }), { at, p }),
+    h.line("postToolUse", tool("Write", "w-1", { tool_input: input, content: "export const a = 1;\n", error_message: "CANARY not a success key" }), { at, p }),
+    // Written content goes only with the arguments it belongs to, and only on a Write.
+    h.line("postToolUse", tool("Write", "w-2", { content: "CANARY no arguments" }), { at, p }),
+    h.line("postToolUse", tool("Write", "w-3", { tool_input: { file_path: "/srv/fixture/password=hunter2-dir/a.ts" }, content: "CANARY withheld arguments" }), { at, p }),
+    h.line("postToolUse", tool("Read", "r-1", { tool_input: input, content: "CANARY not a Read key" }), { at, p }),
+    // A value at its cut is sent whole; one over it was not written by the hook and is not sent.
+    h.line("postToolUse", tool("Grep", "g-1", { output: "o".repeat(max) }), { at, p }),
+    h.line("postToolUse", tool("Grep", "g-2", { output: "o".repeat(max + 1) }), { at, p }),
+    h.line("postToolUseFailure", tool("Grep", "g-3", { error_message: "e".repeat(max + 1) }), { at, p }),
+    h.line("postToolUse", tool("Write", "w-4", { tool_input: input, content: "c".repeat(max + 1) }), { at, p }),
+    h.line("postToolUse", tool("Grep", "g-4", { output: 7 }), { at, p }),
+    h.line("postToolUse", tool("Grep", "g-5", { output: "" }), { at, p }),
+  ], at);
+  const collector = await h.start();
+  await collector.tick();
+  const sent = Object.fromEntries(h.sent(0).map(row => [row.payload.tool_use_id, row.payload]));
+  const content = (id: string) => Object.fromEntries(["output", "error_message", "content"].filter(key => key in sent[id]).map(key => [key, sent[id][key]]));
+  assert.deepEqual(content("s-1"), { output: "2 passing\n" });
+  assert.deepEqual(content("s-2"), { error_message: "command exited 1" });
+  assert.deepEqual(content("w-1"), { content: "export const a = 1;\n" });
+  assert.deepEqual(sent["w-1"].tool_input, input, "the arguments stay the file path alone");
+  assert.deepEqual(content("g-1"), { output: "o".repeat(max) });
+  for (const id of ["w-2", "w-3", "r-1", "g-2", "g-3", "w-4", "g-4", "g-5"]) assert.deepEqual(content(id), {}, id);
+  assert.doesNotMatch(h.requests[0]!.body, /CANARY/);
+  assert.equal(h.sent(0).length, 12, "a value that is left out does not take its record with it");
+});
+
+test("turning an option off removes the content it adds from records already on disk and from the saved context", async t => {
+  const h = harness(t), at = START - MINUTE, p = EVERYTHING;
+  const lines = (turn: string, base: number) => [
+    h.line("beforeSubmitPrompt", prompt(turn, { prompt: "CANARY_PROMPT" }), { at: base, p }),
+    h.line("afterAgentThought", thought(`${turn}-0-x`, "synthetic-model", { text: "CANARY_THOUGHT" }), { at: base + 1, p }),
+    h.line("beforeReadFile", fileRead(`read-${turn}`, "CANARY_READ"), { at: base + 2, p }),
+    h.line("postToolUse", tool("Read", `read-${turn}`, { generation_id: turn, output: "CANARY_OUTPUT", tool_input: { file_path: "/srv/fixture/CANARY_PATH" } }), { at: base + 3, p }),
+    h.line("postToolUse", tool("Write", `write-${turn}`, { generation_id: turn, tool_input: { file_path: "/srv/fixture/CANARY_PATH" }, content: "CANARY_WRITE" }), { at: base + 4, p }),
+    h.line("postToolUseFailure", tool("Shell", `shell-${turn}`, { generation_id: turn, failure_type: "error", error_message: "CANARY_ERROR" }), { at: base + 5, p }),
+    h.line("stop", stop(turn), { at: base + 6, p }),
+    h.line("afterAgentResponse", reply(turn, { text: "CANARY_REPLY" }), { at: base + 7, p }),
+  ];
+  const sentContent = (rows: Framed[]) => [...new Set(rows.flatMap(row => JSON.stringify([row.payload, row.context]).match(/CANARY_[A-Z]+/g) ?? []))].sort();
+
+  // Everything on: every kind is sent.
+  h.append(lines("turn-a", at), at);
+  let collector = await h.start({ policy: EVERYTHING });
+  await collector.tick();
+  assert.deepEqual(sentContent(h.sent(0)), ["CANARY_ERROR", "CANARY_OUTPUT", "CANARY_PATH", "CANARY_PROMPT", "CANARY_READ", "CANARY_REPLY", "CANARY_THOUGHT", "CANARY_WRITE"]);
+  assert.equal(h.sent(0).length, 6);
+  // Context that waits for a later record is saved with its content while the options are on.
+  h.clock.now += MINUTE;
+  h.append([
+    h.line("afterAgentThought", thought("turn-waiting-0-x", "synthetic-model", { text: "CANARY_THOUGHT waiting" }), { at: h.clock.now - 30 * SECOND, p }),
+    h.line("beforeReadFile", fileRead("read-waiting", "CANARY_READ waiting"), { at: h.clock.now - 30 * SECOND, p }),
+  ]);
+  await collector.tick();
+  assert.match(fs.readFileSync(h.files.checkpoint, "utf8"), /CANARY_THOUGHT waiting.*CANARY_READ waiting/s);
+  await collector.close();
+
+  // Prompts off: the reply and the reasoning go, and a reply left empty is not uploaded. Tool content stays.
+  const waiting = (turn: string, base: number) => [
+    h.line("postToolUse", tool("Read", "read-waiting", { generation_id: turn }), { at: base + 8, p }),
+    h.line("afterAgentResponse", reply("turn-waiting", { text: "CANARY_REPLY" }), { at: base + 9, p }),
+  ];
+  h.clock.now += MINUTE;
+  h.append([...lines("turn-b", h.clock.now - 30 * SECOND), ...waiting("turn-b", h.clock.now - 30 * SECOND)]);
+  collector = await h.start({ policy: { prompts: false, toolDetails: true, email: true } });
+  assert.doesNotMatch(fs.readFileSync(h.files.checkpoint, "utf8"), /CANARY_THOUGHT/, "the saved reasoning left the disk when the collector started");
+  assert.match(fs.readFileSync(h.files.checkpoint, "utf8"), /CANARY_READ waiting/);
+  await collector.tick();
+  assert.deepEqual(sentContent(h.sent(1)), ["CANARY_ERROR", "CANARY_OUTPUT", "CANARY_PATH", "CANARY_READ", "CANARY_WRITE"]);
+  assert.deepEqual(h.sent(1).map(row => row.hook), ["beforeSubmitPrompt", "postToolUse", "postToolUse", "postToolUseFailure", "stop", "postToolUse"]);
+  assert.deepEqual(h.sent(1).at(-1)!.context, { read: { content: "CANARY_READ waiting" } });
+  await collector.close();
+
+  // Tool details off: tool output, failure text and file content go. The reply and the reasoning stay.
+  h.clock.now += MINUTE;
+  h.append([
+    h.line("beforeReadFile", fileRead("read-waiting", "CANARY_READ waiting"), { at: h.clock.now - 50 * SECOND, p }),
+    ...lines("turn-c", h.clock.now - 30 * SECOND), ...waiting("turn-c", h.clock.now - 30 * SECOND),
+  ]);
+  collector = await h.start({ policy: { prompts: true, toolDetails: false, email: true } });
+  await collector.tick();
+  assert.deepEqual(sentContent(h.sent(2)), ["CANARY_PROMPT", "CANARY_REPLY", "CANARY_THOUGHT"]);
+  assert.deepEqual(h.sent(2).filter(row => row.hook === "afterAgentResponse").map(row => [row.payload.generation_id, row.payload.text, row.context]),
+    [["turn-c", "CANARY_REPLY", { thoughts: [{ text: "CANARY_THOUGHT" }] }], ["turn-waiting", "CANARY_REPLY", {}]]);
+  assert.doesNotMatch(fs.readFileSync(h.files.checkpoint, "utf8"), /CANARY/);
+  await collector.close();
+
+  // Both off (--no-enrich): metadata only, and no reply record at all.
+  h.clock.now += MINUTE;
+  h.append([
+    h.line("afterAgentThought", thought("turn-waiting-0-x", "synthetic-model", { text: "CANARY_THOUGHT waiting" }), { at: h.clock.now - 50 * SECOND, p }),
+    ...lines("turn-d", h.clock.now - 30 * SECOND), ...waiting("turn-d", h.clock.now - 30 * SECOND),
+  ]);
+  collector = await h.start({ policy: { prompts: false, toolDetails: false, email: true } });
+  const health = await collector.tick();
+  assert.deepEqual(sentContent(h.sent(3)), []);
+  assert.doesNotMatch(h.requests[3]!.body, /CANARY/);
+  assert.deepEqual(h.sent(3).map(row => row.hook), ["beforeSubmitPrompt", "postToolUse", "postToolUse", "postToolUseFailure", "stop", "postToolUse"]);
+  assert.deepEqual(h.sent(3).map(row => Object.keys(row.context)), [[], [], [], [], ["models"], []]);
+  assert.equal(health.recordsMalformed, 0);
+  assert.doesNotMatch(fs.readFileSync(h.files.checkpoint, "utf8"), /CANARY/);
+});
+
+test("a record that content takes past 65,536 bytes has its longest content string halved until it fits", async t => {
+  const h = harness(t, { policy: CONTENT }), at = START - MINUTE, p = CONTENT;
+  const control = (length: number) => "\u0001".repeat(length);
+  const BOUND = CURSOR_LIMITS.recordBytes;
+  h.append([
+    // Six bytes a character: 32 thoughts of 2,048 units are 384 KiB.
+    ...Array.from({ length: 32 }, (_, index) => h.line("afterAgentThought", thought(`${TURN}-${index}-x`, "synthetic-model", { text: `${String(index).padStart(2, "0")}${control(2046)}` }), { at: at + index, p })),
+    h.line("afterAgentResponse", reply(TURN, { text: "a short reply" }), { at: at + 40, p }),
+    // The output and the read content are 48 KiB each: the first of two equals is halved first.
+    h.line("beforeReadFile", fileRead("r-1", control(8192)), { at: at + 50, p }),
+    h.line("postToolUse", tool("Read", "r-1", { output: control(8192), tool_input: { file_path: "/srv/fixture/repo-alpha/a.bin" } }), { at: at + 51, p }),
+    // Half of this text would end inside a pair, so it ends one unit earlier.
+    h.line("afterAgentThought", thought(`${NEXT_TURN}-0-x`, "synthetic-model", { text: `a${control(2047)}` }), { at: at + 58, p }),
+    h.line("afterAgentThought", thought(`${NEXT_TURN}-1-x`, "synthetic-model", { text: `b${control(2047)}` }), { at: at + 59, p }),
+    h.line("afterAgentResponse", reply(NEXT_TURN, { text: control(5000) + PAIR + control(5000) }), { at: at + 60, p }),
+    // Three bytes a character fits: nothing is cut.
+    h.line("afterAgentResponse", reply("a-wide-turn", { text: String.fromCodePoint(0x4e16).repeat(16_384) }), { at: at + 70, p }),
+  ], at);
+  const collector = await h.start();
+  const health = await run(h, collector, MINUTE);
+  const rows = h.delivered(), records = h.requests.flatMap(request => sourceRecords(request.body));
+  assert.deepEqual(rows.map(row => [row.hook, row.payload.generation_id]), [["afterAgentResponse", TURN], ["postToolUse", TURN], ["afterAgentResponse", NEXT_TURN], ["afterAgentResponse", "a-wide-turn"]]);
+  for (const record of records) assert.ok(Buffer.byteLength(record) <= BOUND, `a record of ${Buffer.byteLength(record)} bytes`);
+  for (const request of h.requests) assert.ok(Buffer.byteLength(request.body) <= CURSOR_LIMITS.frameBytes);
+
+  const thoughts = rows[0]!.context.thoughts as Array<{ text: string }>;
+  assert.equal(thoughts.length, 32, "halving shortens entries; none is dropped while it has text");
+  thoughts.forEach((item, index) => assert.equal(item.text, `${String(index).padStart(2, "0")}${control(item.text.length - 2)}`, "each keeps its own start"));
+  assert.deepEqual([...new Set(thoughts.map(item => item.text.length))].sort((a, b) => a - b), [256, 512], "halved in rounds, the longest first");
+  assert.ok(thoughts.findIndex(item => item.text.length === 512) > thoughts.map(item => item.text.length).lastIndexOf(256), "the first of equals goes first");
+  assert.ok(Buffer.byteLength(records[0]!) + 256 * 6 > BOUND, "it stops at the first size that fits");
+  assert.equal(rows[0]!.payload.text, "a short reply");
+  assert.equal(rows[0]!.payload.input_tokens, 31744, "metadata is never shortened");
+
+  assert.deepEqual([rows[1]!.payload.output.length, rows[1]!.context.read.content.length], [4096, 4096]);
+  assert.deepEqual(rows[1]!.payload.tool_input, { file_path: "/srv/fixture/repo-alpha/a.bin" });
+  assert.equal(rows[2]!.payload.text, control(5000), "floor of half is 5,001 units, whose last would be half a pair");
+  assert.deepEqual(rows[2]!.context.thoughts.map((item: any) => item.text.length), [2048, 2048], "shorter strings are left as they are");
+  assert.equal(rows[3]!.payload.text.length, 16_384);
+  assert.deepEqual([health.recordsMalformed, health.recordsAcknowledged, health.backlogBytes], [0, 4, 0]);
+});
+
+test("the worked example of the wire contract, from Cursor's events to the uploaded records", async t => {
+  const h = harness(t, { policy: CONTENT });
+  const conversation = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d", turn = "dfbd74c5-1a2b-4c3d-8e4f-5a6b7c8d9e0f";
+  const readId = "call-b89e81a2-0c1d-4e2f-8a3b-4c5d6e7f8a9b-0\nfc_7cf51bbd-1e2f-4a3b-8c4d-5e6f7a8b9c0d_0", shellId = "7ccce220-3b4c-4d5e-8f6a-7b8c9d0e1f2a";
+  const common = { conversation_id: conversation, session_id: conversation, generation_id: turn, model: "default", cursor_version: "2099.1.2-synthetic",
+    workspace_roots: ["/workspace/cursor-fixture"], user_email: "dev.fixture@example.test", transcript_path: null };
+  const first = "The user wants me to:\n1. Read calc.py\n...", second = "The user asked me to reply with the single word \"done\".";
+  const tokens = { input_tokens: 24869, output_tokens: 195, cache_read_tokens: 24448, cache_write_tokens: 0 };
+  const events = [
+    { ...common, hook_event_name: "beforeReadFile", tool_use_id: readId, file_path: "/workspace/cursor-fixture/calc.py", content: "def add(a, b):\n    return a + b\n", attachments: [] },
+    { ...common, hook_event_name: "postToolUse", tool_name: "Read", tool_use_id: readId, duration: 4.922, tool_input: { file_path: "/workspace/cursor-fixture/calc.py" },
+      tool_output: "{\"file_path\":\"/workspace/cursor-fixture/calc.py\",\"content_length\":32}" },
+    { ...common, hook_event_name: "afterShellExecution", tool_use_id: shellId, command: "python3 test_calc.py", output: "ok\n", duration: 440.1, sandbox: false },
+    { ...common, hook_event_name: "postToolUse", tool_name: "Shell", tool_use_id: shellId, duration: 442.295, tool_input: { command: "python3 test_calc.py", cwd: "", timeout: 30000 },
+      tool_output: "{\"output\":\"ok\\n\",\"exitCode\":0}" },
+    // Interactive Cursor fires each thought twice: with the resolved model, then as "default".
+    { ...common, hook_event_name: "afterAgentThought", generation_id: `${turn}-0-k3x9`, model: "synthetic-model-high", text: first, duration_ms: 1200 },
+    { ...common, hook_event_name: "afterAgentThought", text: first, duration_ms: 1200 },
+    { ...common, hook_event_name: "afterAgentThought", generation_id: `${turn}-1-p7q2`, model: "synthetic-model-high", text: second, duration_ms: 300 },
+    { ...common, hook_event_name: "afterAgentThought", text: second, duration_ms: 300 },
+    { ...common, hook_event_name: "stop", status: "completed", loop_count: 0, ...tokens },
+    { ...common, hook_event_name: "afterAgentResponse", text: "I'll read `calc.py` and run the tests.done", ...tokens },
+  ];
+  const program = path.join(h.root, "hook.cjs");
+  fs.writeFileSync(program, cursorHookProgram({ stateDir: h.stateDir, content: { prompts: true, toolDetails: true }, identity: { email: false } }));
+  for (const event of events) {
+    const ran = spawnSync(process.execPath, [program], { input: JSON.stringify(event), env: {}, encoding: "utf8", timeout: 20_000 });
+    assert.deepEqual([ran.status, ran.stdout, ran.stderr], [0, "", ""]);
+  }
+  h.clock.now = Date.now() + 30 * SECOND;
+  const collector = await h.start();
+  await collector.tick();
+  const head = `"payload":{"generation_id":"${turn}","model":"default","cursor_version":"2099.1.2-synthetic","workspace_root":"/workspace/cursor-fixture",`;
+  assert.deepEqual(sourceRecords(h.requests[0]!.body).filter(record => !record.startsWith('{"hook":"stop"')), [
+    `{"hook":"postToolUse",${head}"tool_name":"Read","tool_use_id":${JSON.stringify(readId)},"duration":4.922,"tool_input_size_bytes":49,` +
+      `"result":{"content_length":32},"tool_input":{"file_path":"/workspace/cursor-fixture/calc.py"},` +
+      `"output":"{\\"file_path\\":\\"/workspace/cursor-fixture/calc.py\\",\\"content_length\\":32}"},` +
+      `"context":{"read":{"content":"def add(a, b):\\n    return a + b\\n"}}}`,
+    `{"hook":"postToolUse",${head}"tool_name":"Shell","tool_use_id":"${shellId}","duration":442.295,"tool_input_size_bytes":59,` +
+      `"result":{"exit_code":0,"output_bytes":3},"tool_input":{"command":"python3 test_calc.py","cwd":"","timeout":30000},"output":"ok\\n"},` +
+      `"context":{"shell":{"sandbox":false}}}`,
+    `{"hook":"afterAgentResponse",${head}"text":"I'll read \`calc.py\` and run the tests.done","input_tokens":24869,"output_tokens":195,` +
+      `"cache_read_tokens":24448,"cache_write_tokens":0},` +
+      `"context":{"thoughts":[{"text":"The user wants me to:\\n1. Read calc.py\\n..."},{"text":"The user asked me to reply with the single word \\"done\\"."}]}}`,
+  ]);
+  assert.deepEqual(h.sent(0).map(row => [row.hook, row.session]), [["postToolUse", conversation], ["postToolUse", conversation], ["stop", conversation], ["afterAgentResponse", conversation]]);
+  assert.deepEqual(h.sent(0)[2]!.context, { models: [{ model: "synthetic-model-high" }, { model: "default" }] }, "the stop still names the turn's models");
+  assert.deepEqual(savedContext(h), []);
+});
+
+test("spool lines written by the 0.5.0 hook program still upload, and a service that knows neither the new hook nor the new keys is sent a valid frame", async t => {
+  const h = harness(t, { policy: EVERYTHING }), at = START - MINUTE, p = EVERYTHING;
+  // What 0.5.0 wrote: no content keys, six hooks, thoughts without text.
+  h.append([
+    h.line("beforeSubmitPrompt", prompt(TURN, { prompt: "rename the helper", workspace_root: "/srv/fixture/repo-alpha", user_email: "dev.fixture@example.test" }), { at, p }),
+    h.line("afterAgentThought", thought(`${TURN}-0-ab12`, "synthetic-model-high"), { at: at + 1, p }),
+    h.line("afterShellExecution", shell("s-1", true), { at: at + 2, p }),
+    h.line("postToolUse", tool("Shell", "s-1", { result: { exit_code: 0, output_bytes: 3 }, tool_input: { command: "npm test" } }), { at: at + 3, p }),
+    h.line("postToolUse", tool("Read", "r-1", { result: { content_length: 32 }, tool_input: { file_path: "/srv/fixture/repo-alpha/a.ts" } }), { at: at + 4, p }),
+    h.line("postToolUseFailure", tool("Shell", "s-2", { failure_type: "error", is_interrupt: false, error_bytes: 16 }), { at: at + 5, p }),
+    h.line("stop", stop(), { at: at + 6, p }),
+  ], at);
+  // A checkpoint as 0.5.0 saved it: no reads, thoughts without text.
+  fs.writeFileSync(h.files.checkpoint, JSON.stringify({ version: 1, offsets: {}, inodes: {},
+    conversations: [{ id: "an-older-conversation", prompt: "an-older-turn", thoughts: [{ generation_id: "an-older-turn-0", model: "synthetic-model" }], sandbox: [["s-0", false]] }],
+    totals: { spooled: 3, acknowledged: 1, malformed: 0, expired: 0, rejected: 0, lost: 0, reframed: 0, requests: 1 } }), { mode: 0o600 });
+  const collector = await h.start();
+  const health = await collector.tick();
+  assert.deepEqual(h.sent(0).map(row => [row.hook, row.payload.tool_use_id, row.context]), [
+    ["beforeSubmitPrompt", undefined, {}],
+    ["postToolUse", "s-1", { shell: { sandbox: true } }],
+    ["postToolUse", "r-1", {}],
+    ["postToolUseFailure", "s-2", {}],
+    ["stop", undefined, { models: [{ model: "synthetic-model-high" }] }],
+  ]);
+  assert.equal(h.sent(0)[0]!.payload.prompt, "rename the helper");
+  assert.deepEqual(h.sent(0)[1]!.payload.tool_input, { command: "npm test" });
+  for (const row of h.sent(0)) for (const key of ["output", "error_message", "content", "text"]) assert.ok(!(key in row.payload));
+  assert.deepEqual([health.recordsSpooled, health.recordsAcknowledged, health.recordsMalformed], [3 + 7, 1 + 5, 0]);
+  assert.deepEqual(savedContext(h).map(conversation => conversation.id), ["an-older-conversation", CONVERSATION]);
 });

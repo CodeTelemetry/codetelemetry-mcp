@@ -17,8 +17,8 @@ export const CURSOR_SOURCE_FORMAT = "cursor-hooks-source-v1";
 export const CURSOR_SOURCE_EVENT = "cursor.source_record";
 export const CURSOR_SOURCE_SERVICE = "cursor";
 export const CURSOR_SOURCE_SCOPE = Object.freeze({ name: "codetelemetry-connect.cursor-hooks", version: "1" });
-/** The hooks whose records are uploaded. The other two only supply context. */
-export const CURSOR_UPLOADED_HOOKS: readonly CursorHookEvent[] = ["beforeSubmitPrompt", "stop", "postToolUse", "postToolUseFailure"];
+/** The hooks whose records are uploaded. The other three only supply context. */
+export const CURSOR_UPLOADED_HOOKS: readonly CursorHookEvent[] = ["beforeSubmitPrompt", "stop", "postToolUse", "postToolUseFailure", "afterAgentResponse"];
 
 const KIB = 1024, MIB = 1024 * KIB, MINUTE = 60_000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
 
@@ -26,8 +26,10 @@ export const CURSOR_LIMITS = Object.freeze({
   // The wire contract: one envelope, and one record inside it.
   envelopeBytes: 256 * KIB,
   envelopeRecords: 256,
-  recordBytes: 32 * KIB,
+  recordBytes: 64 * KIB,
   models: 4,
+  /** Reasoning entries on one reply record, newest kept. */
+  replyThoughts: 32,
   modelParams: 8,
   /** Framing stops here, well inside the wire bound. */
   frameBytes: 200 * KIB,
@@ -60,8 +62,11 @@ export const CURSOR_LIMITS = Object.freeze({
 
   // Context kept between records.
   conversations: 64,
-  thoughts: 16,
+  /** Cursor fires a thought twice, so this holds the 32 a reply may carry. */
+  thoughts: 64,
   sandboxFlags: 32,
+  /** File contents waiting for the Read record of their call. */
+  reads: 8,
   lookahead: 16,
   contextBytes: 256 * KIB,
 
@@ -96,9 +101,13 @@ export type CursorThought = {
   model?: string;
   model_id?: string;
   model_params?: CursorModelParam[];
+  /** The reasoning text, kept until the reply of its turn is framed. */
+  text?: string;
   /** Not of the latest prompt's turn by position: read before that prompt, or
    *  left over when a stop found its own thoughts by turn key. */
   prior?: true;
+  /** A stop has taken its model; it is kept for its text alone. */
+  done?: true;
 };
 export type CursorConversation = {
   id: string;
@@ -107,6 +116,8 @@ export type CursorConversation = {
   thoughts: CursorThought[];
   /** Raw tool call ids with the sandbox flag their shell execution reported. */
   sandbox: Array<[string, boolean]>;
+  /** Raw tool call ids with the content their file read returned. */
+  reads?: Array<[string, string]>;
   /** Spool ids of context records already attached to a record framed before them. */
   used?: string[];
 };
@@ -189,15 +200,23 @@ function modelParams(value: unknown): CursorModelParam[] | undefined {
   return pairs.length ? pairs : undefined;
 }
 
-/** The fields of a thought the service may see, or null when it names no model. */
-function thoughtOf(source: Fields): CursorThought | null {
+/** The fields of a thought the service may see, its text only `withText`, or
+ *  null when it names no model and carries no text. */
+function thoughtOf(source: Fields, withText: boolean): CursorThought | null {
   const thought: CursorThought = {};
   if (isText(source.generation_id, 256)) thought.generation_id = source.generation_id;
   if (isText(source.model, 128)) thought.model = source.model;
   if (isText(source.model_id, 128)) thought.model_id = source.model_id;
   const params = modelParams(source.model_params);
   if (params) thought.model_params = params;
-  return thought.model !== undefined || thought.model_id !== undefined ? thought : null;
+  if (withText && isText(source.text, CURSOR_HOOK_LIMITS.thoughtChars)) thought.text = source.text;
+  return thought.model !== undefined || thought.model_id !== undefined || thought.text !== undefined ? thought : null;
+}
+
+/** A cut never leaves half a character. */
+function whole(value: string): string {
+  const last = value.charCodeAt(value.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? value.slice(0, -1) : value;
 }
 
 /** A tool's arguments are kept whole or withheld whole: never cut, never redacted. */
@@ -248,9 +267,11 @@ export function cursorSourcePayload(line: CursorSpoolLine, policy: CursorPolicy)
     copyInteger(out, source, "attachment_count");
     return out;
   }
-  if (line.hook === "stop") {
-    copyText(out, source, "status", 64);
-    copyNumber(out, source, "loop_count");
+  if (line.hook === "stop" || line.hook === "afterAgentResponse") {
+    if (line.hook === "stop") {
+      copyText(out, source, "status", 64);
+      copyNumber(out, source, "loop_count");
+    } else if (prompts) copyText(out, source, "text", CURSOR_HOOK_LIMITS.replyChars);
     // Passed through as reported; the service judges whether a count is sound.
     for (const key of ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"]) {
       const value = source[key];
@@ -271,15 +292,66 @@ export function cursorSourcePayload(line: CursorSpoolLine, policy: CursorPolicy)
   }
   const input = toolDetails ? toolInput(source.tool_name, source.tool_input, prompts) : undefined;
   if (input) out.tool_input = input;
+  if (!toolDetails) return out;
+  if (line.hook === "postToolUse") {
+    copyText(out, source, "output", CURSOR_HOOK_LIMITS.contentChars);
+    // What a Write wrote is sent beside its arguments, and only with them.
+    if (input && source.tool_name === "Write") copyText(out, source, "content", CURSOR_HOOK_LIMITS.contentChars);
+  } else copyText(out, source, "error_message", CURSOR_HOOK_LIMITS.contentChars);
   return out;
 }
 
-/** One uploaded record, or null when it is over the record bound. The payload
- *  of a line is always smaller than the line, which the hook already bounds, so
- *  only the attached context can take a record past it. */
+/** True for a reply record that would carry neither reply text nor reasoning
+ *  text. Such a record is not uploaded. */
+export function cursorReplyIsEmpty(line: CursorSpoolLine, policy: CursorPolicy, context: Fields): boolean {
+  if (line.hook !== "afterAgentResponse") return false;
+  const thoughts = context.thoughts;
+  return !(Array.isArray(thoughts) && thoughts.length) &&
+    !(line.p.prompts && policy.prompts && isText(line.payload.text, CURSOR_HOOK_LIMITS.replyChars));
+}
+
+type ContentSlot = { length: number; halve: () => void };
+/** Every content string of a record, with the way to shorten it or leave it out. */
+function contentSlots(payload: Fields, context: Fields): ContentSlot[] {
+  const slots: ContentSlot[] = [];
+  const slot = (holder: Fields, key: string, remove: () => void) => {
+    const value = holder[key];
+    if (typeof value !== "string") return;
+    slots.push({ length: value.length, halve: () => {
+      const half = whole(value.slice(0, Math.floor(value.length / 2)));
+      if (half.length) holder[key] = half; else remove();
+    } });
+  };
+  for (const key of ["output", "error_message", "content", "text"]) slot(payload, key, () => delete payload[key]);
+  if (isRecord(context.read)) slot(context.read, "content", () => delete context.read);
+  if (Array.isArray(context.thoughts)) {
+    const thoughts = context.thoughts as Fields[];
+    for (const thought of thoughts) {
+      slot(thought, "text", () => {
+        thoughts.splice(thoughts.indexOf(thought), 1);
+        if (!thoughts.length) delete context.thoughts;
+      });
+    }
+  }
+  return slots;
+}
+
+/** One uploaded record, or null when it cannot be sent: a reply with nothing to
+ *  carry, or a record whose metadata alone is over the record bound. Content
+ *  is inside its character cuts already; where the record is still over the
+ *  byte bound (text that JSON or UTF-8 widens), its longest content string is
+ *  halved until the record fits. Metadata is never shortened. */
 export function frameCursorRecord(line: CursorSpoolLine, policy: CursorPolicy, context: Fields): ImportLog | null {
-  const record = JSON.stringify({ hook: line.hook, payload: cursorSourcePayload(line, policy), context });
-  if (Buffer.byteLength(record) > CURSOR_LIMITS.recordBytes) return null;
+  if (cursorReplyIsEmpty(line, policy, context)) return null;
+  const framed = { hook: line.hook, payload: cursorSourcePayload(line, policy), context: structuredClone(context) };
+  let record = JSON.stringify(framed);
+  while (Buffer.byteLength(record) > CURSOR_LIMITS.recordBytes) {
+    const longest = contentSlots(framed.payload, framed.context).reduce<ContentSlot | null>((most, slot) => most && most.length >= slot.length ? most : slot, null);
+    if (!longest) return null;
+    longest.halve();
+    record = JSON.stringify(framed);
+  }
+  if (cursorReplyIsEmpty({ ...line, payload: framed.payload }, policy, framed.context)) return null;
   return {
     timeUnixNano: line.t,
     attributes: {
@@ -310,26 +382,41 @@ export function cursorRecordBytes(log: ImportLog): number {
 }
 
 const INVALID_CONTEXT = "invalid Cursor checkpoint context";
+/** The two content options, as the context applies them. */
+type ContentBits = Pick<CursorPolicy, "prompts" | "toolDetails">;
+const ALL_CONTENT: ContentBits = Object.freeze({ prompts: true, toolDetails: true });
 
 /** Rebuild one saved conversation. A wrong structure is an error; a count above
  *  today's bound keeps its newest entries, so a later release may lower a bound
- *  without stranding a checkpoint. */
-function restoreConversation(value: unknown, limits: CursorLimits): CursorConversation {
+ *  without stranding a checkpoint. Content saved under an option that is off
+ *  now is left out. */
+function restoreConversation(value: unknown, limits: CursorLimits, policy: ContentBits): CursorConversation {
   if (!isRecord(value) || typeof value.id !== "string" || !IDENTITY.test(value.id) ||
     (value.prompt !== undefined && !isText(value.prompt, 256)) || !Array.isArray(value.thoughts) || !Array.isArray(value.sandbox) ||
+    (value.reads !== undefined && !Array.isArray(value.reads)) ||
     (value.used !== undefined && (!Array.isArray(value.used) || !value.used.every(isEventId)))) throw new Error(INVALID_CONTEXT);
   const conversation: CursorConversation = { id: value.id, thoughts: [], sandbox: [] };
   if (value.prompt !== undefined) conversation.prompt = value.prompt;
   for (const item of value.thoughts.slice(-limits.thoughts)) {
-    const thought = isRecord(item) ? thoughtOf(item) : null;
-    if (!thought || (item.prior !== undefined && item.prior !== true)) throw new Error(INVALID_CONTEXT);
+    if (!isRecord(item) || !thoughtOf(item, true) || (item.prior !== undefined && item.prior !== true) ||
+      (item.done !== undefined && item.done !== true)) throw new Error(INVALID_CONTEXT);
+    const thought = thoughtOf(item, policy.prompts);
+    // Kept for its text alone, and the text may no longer be sent.
+    if (!thought || (item.done === true && thought.text === undefined)) continue;
     if (item.prior === true) thought.prior = true;
+    if (item.done === true) thought.done = true;
     conversation.thoughts.push(thought);
   }
   for (const item of value.sandbox.slice(-limits.sandboxFlags)) {
     if (!Array.isArray(item) || item.length !== 2 || !isText(item[0], 512) || typeof item[1] !== "boolean") throw new Error(INVALID_CONTEXT);
     conversation.sandbox.push([item[0], item[1]]);
   }
+  const reads: Array<[string, string]> = [];
+  for (const item of (value.reads as unknown[] | undefined)?.slice(-limits.reads) ?? []) {
+    if (!Array.isArray(item) || item.length !== 2 || !isText(item[0], 512) || !isText(item[1], CURSOR_HOOK_LIMITS.contentChars)) throw new Error(INVALID_CONTEXT);
+    reads.push([item[0], item[1]]);
+  }
+  if (reads.length && policy.toolDetails) conversation.reads = reads;
   const used = value.used as string[] | undefined;
   if (used?.length) conversation.used = used.slice(-limits.lookahead);
   return conversation;
@@ -340,6 +427,7 @@ function restoreConversation(value: unknown, limits: CursorLimits): CursorConver
 function distinctModels(thoughts: readonly CursorThought[]): Fields[] {
   const models = new Map<string, Fields>();
   for (const thought of thoughts) {
+    if (thought.model === undefined && thought.model_id === undefined) continue;
     const key = JSON.stringify([thought.model ?? null, thought.model_id ?? null]);
     models.delete(key);
     models.set(key, {
@@ -351,6 +439,11 @@ function distinctModels(thoughts: readonly CursorThought[]): Fields[] {
   return [...models.values()];
 }
 
+/** True when a thought belongs to the turn: its `generation_id` is the turn's,
+ *  or the turn's and a suffix. */
+const ofTurn = (thought: CursorThought, turn: string): boolean => thought.generation_id !== undefined &&
+  (thought.generation_id === turn || thought.generation_id.startsWith(`${turn}-`));
+
 export type CursorAttachment = {
   /** The record's `context`. */
   context: Fields;
@@ -360,21 +453,25 @@ export type CursorAttachment = {
 const NO_CONTEXT: CursorAttachment = Object.freeze({ context: Object.freeze({}), settle: () => {} });
 
 /** What the collector remembers per conversation between records: the latest
- *  prompt's turn, the thoughts not yet attached to a stop and the sandbox flags
- *  not yet attached to a tool record. Hooks are separate processes, so two
- *  records written within milliseconds reach the spool in either order; a
- *  record therefore also looks at the context records that follow it. The state
- *  is a function of the spool alone and is bounded in entries and bytes, least
- *  recently used conversation first to go. */
+ *  prompt's turn, the thoughts not yet attached to a stop or a reply, the
+ *  sandbox flags and file contents not yet attached to a tool record. Hooks are
+ *  separate processes, so two records written within milliseconds reach the
+ *  spool in either order; a record therefore also looks at the context records
+ *  that follow it. The state is a function of the spool and the capture options
+ *  alone and is bounded in entries and bytes, least recently used conversation
+ *  first to go. Reasoning text and file content are held only while their
+ *  option is on. */
 export class CursorContext {
   private conversations = new Map<string, CursorConversation>();
   private limits: CursorLimits;
+  private policy: ContentBits;
 
-  constructor(saved: unknown = [], limits: CursorLimits = CURSOR_LIMITS) {
+  constructor(saved: unknown = [], limits: CursorLimits = CURSOR_LIMITS, policy: ContentBits = ALL_CONTENT) {
     if (!Array.isArray(saved)) throw new Error(INVALID_CONTEXT);
     this.limits = limits;
+    this.policy = { prompts: policy.prompts, toolDetails: policy.toolDetails };
     for (const item of saved.slice(-limits.conversations)) {
-      const conversation = restoreConversation(item, limits);
+      const conversation = restoreConversation(item, limits, this.policy);
       if (this.conversations.has(conversation.id)) throw new Error(INVALID_CONTEXT);
       this.conversations.set(conversation.id, conversation);
     }
@@ -391,7 +488,8 @@ export class CursorContext {
   /** Forget a conversation that holds nothing. */
   private release(conversation: CursorConversation): void {
     if (!conversation.used?.length) delete conversation.used;
-    if (conversation.prompt === undefined && !conversation.thoughts.length && !conversation.sandbox.length && !conversation.used) {
+    if (!conversation.reads?.length) delete conversation.reads;
+    if (conversation.prompt === undefined && !conversation.thoughts.length && !conversation.sandbox.length && !conversation.reads && !conversation.used) {
       this.conversations.delete(conversation.id);
     }
   }
@@ -400,9 +498,26 @@ export class CursorContext {
     conversation.used = [...(conversation.used ?? []), ...ids].slice(-this.limits.lookahead);
   }
 
-  /** Take in a consumed record: a prompt opens a turn, a thought and a shell
-   *  execution wait for the record they belong to. Uploaded tool records and
-   *  stops leave no trace of their own. */
+  private keep(conversation: CursorConversation, thought: CursorThought): void {
+    conversation.thoughts.push(thought);
+    if (conversation.thoughts.length > this.limits.thoughts) conversation.thoughts.shift();
+  }
+
+  /** A thought as it may be held: its text only when the prompts option was on
+   *  when it was written and is on now. */
+  private thought(line: CursorSpoolLine): CursorThought | null {
+    return thoughtOf(line.payload, line.p.prompts && this.policy.prompts);
+  }
+
+  /** The content of a file read, when the tool-details option allows it. */
+  private readContent(line: CursorSpoolLine): string | undefined {
+    const content = line.payload.content;
+    return line.p.toolDetails && this.policy.toolDetails && isText(content, CURSOR_HOOK_LIMITS.contentChars) ? content : undefined;
+  }
+
+  /** Take in a consumed record: a prompt opens a turn; a thought, a shell
+   *  execution and a file read wait for the record they belong to. Uploaded
+   *  tool records, stops and replies leave no trace of their own. */
   observe(line: CursorSpoolLine): void {
     if (line.hook === "beforeSubmitPrompt") {
       const conversation = this.touch(line.conversation_id);
@@ -412,7 +527,7 @@ export class CursorContext {
       this.release(conversation);
       return;
     }
-    if (line.hook !== "afterAgentThought" && line.hook !== "afterShellExecution") return;
+    if (line.hook !== "afterAgentThought" && line.hook !== "afterShellExecution" && line.hook !== "beforeReadFile") return;
     const known = this.conversations.get(line.conversation_id);
     if (known?.used?.includes(line.id)) {
       // Already attached to a record that was framed before this one was consumed.
@@ -421,11 +536,13 @@ export class CursorContext {
       return;
     }
     if (line.hook === "afterAgentThought") {
-      const thought = thoughtOf(line.payload);
-      if (!thought) return;
+      const thought = this.thought(line);
+      if (thought) this.keep(this.touch(line.conversation_id), thought);
+    } else if (line.hook === "beforeReadFile") {
+      const content = this.readContent(line);
+      if (content === undefined || !isText(line.payload.tool_use_id, 512)) return;
       const conversation = this.touch(line.conversation_id);
-      conversation.thoughts.push(thought);
-      if (conversation.thoughts.length > this.limits.thoughts) conversation.thoughts.shift();
+      conversation.reads = [...(conversation.reads ?? []), [line.payload.tool_use_id, content] as [string, string]].slice(-this.limits.reads);
     } else if (isText(line.payload.tool_use_id, 512) && typeof line.payload.sandbox === "boolean") {
       const conversation = this.touch(line.conversation_id);
       conversation.sandbox.push([line.payload.tool_use_id, line.payload.sandbox]);
@@ -438,41 +555,90 @@ export class CursorContext {
    *  record that does not fit its envelope leaves the state as it was. */
   attach(line: CursorSpoolLine, ahead: Iterable<CursorSpoolLine>): CursorAttachment {
     if (line.hook === "stop") return this.models(line, ahead);
-    if (line.hook === "postToolUse" || line.hook === "postToolUseFailure") return this.shell(line, ahead);
+    if (line.hook === "afterAgentResponse") return this.reply(line, ahead);
+    if (line.hook === "postToolUse" || line.hook === "postToolUseFailure") {
+      if (line.hook !== "postToolUse" || line.payload.tool_name !== "Read") return this.shell(line, ahead);
+      // `ahead` may be a generator, and two parts read it.
+      const later = [...ahead], shell = this.shell(line, later), read = this.read(line, later);
+      if (read === NO_CONTEXT) return shell;
+      return { context: { ...shell.context, ...read.context }, settle: () => {
+        shell.settle();
+        read.settle();
+      } };
+    }
     return NO_CONTEXT;
+  }
+
+  /** The thoughts of a turn that follow a record in the spool, with their ids. */
+  private later(line: CursorSpoolLine, turn: string, ahead: Iterable<CursorSpoolLine>): Array<[string, CursorThought]> {
+    const conversation = this.conversations.get(line.conversation_id), later: Array<[string, CursorThought]> = [];
+    for (const other of ahead) {
+      if (later.length === this.limits.lookahead) break;
+      if (other.hook !== "afterAgentThought" || other.conversation_id !== line.conversation_id || conversation?.used?.includes(other.id)) continue;
+      const thought = this.thought(other);
+      if (thought && ofTurn(thought, turn)) later.push([other.id, thought]);
+    }
+    return later;
   }
 
   /** The thoughts of a stop's own turn. A thought names its turn in its
    *  `generation_id` (the turn's id, or that id and a suffix), which does not
    *  depend on the order the hooks reached the spool. Only when no thought does
    *  are the thoughts read since the conversation's latest prompt used, and
-   *  only for the stop of that prompt. A model of another turn is never attached. */
+   *  only for the stop of that prompt. A model of another turn is never
+   *  attached. A thought that still holds reasoning text stays, marked, for
+   *  the reply of its turn. */
   private models(line: CursorSpoolLine, ahead: Iterable<CursorSpoolLine>): CursorAttachment {
     const turn = isText(line.payload.generation_id, 256) ? line.payload.generation_id : undefined;
     if (turn === undefined) return NO_CONTEXT;
     const conversation = this.conversations.get(line.conversation_id);
-    const ofTurn = (thought: CursorThought): boolean => thought.generation_id !== undefined &&
-      (thought.generation_id === turn || thought.generation_id.startsWith(`${turn}-`));
-    let seen = conversation?.thoughts.filter(ofTurn) ?? [];
-    const later: Array<[string, CursorThought]> = [];
-    for (const other of ahead) {
-      if (later.length === this.limits.lookahead) break;
-      if (other.hook !== "afterAgentThought" || other.conversation_id !== line.conversation_id || conversation?.used?.includes(other.id)) continue;
-      const thought = thoughtOf(other.payload);
-      if (thought && ofTurn(thought)) later.push([other.id, thought]);
-    }
+    const open = conversation?.thoughts.filter(thought => !thought.done) ?? [];
+    let seen = open.filter(thought => ofTurn(thought, turn));
+    const later = this.later(line, turn, ahead);
     const keyed = seen.length > 0 || later.length > 0;
-    if (!keyed && conversation?.prompt === turn) seen = conversation.thoughts.filter(thought => !thought.prior);
-    if (!seen.length && !later.length) return NO_CONTEXT;
+    if (!keyed && conversation?.prompt === turn) seen = open.filter(thought => !thought.prior);
     const models = distinctModels([...seen, ...later.map(([, thought]) => thought)]).slice(-this.limits.models);
+    if (!models.length) return NO_CONTEXT;
     return {
       context: { models },
       settle: () => {
         const target = this.touch(line.conversation_id);
-        target.thoughts = target.thoughts.filter(thought => !seen.includes(thought));
+        target.thoughts = target.thoughts.filter(thought => !seen.includes(thought) || thought.text !== undefined);
+        for (const thought of seen) thought.done = true;
         // Thoughts name their turn here, so what is left is not this turn's and
         // must not reach a later stop of it through the positional rule.
         if (keyed) for (const thought of target.thoughts) thought.prior = true;
+        for (const [, thought] of later) if (thought.text !== undefined) this.keep(target, { ...thought, done: true });
+        if (later.length) this.markUsed(target, later.map(([id]) => id));
+        this.release(target);
+      },
+    };
+  }
+
+  /** The reasoning text of a reply's own turn, bound by the turn key only: one
+   *  entry per distinct text at its first position (Cursor fires a thought
+   *  twice), the newest kept. The same thoughts still give the turn's stop its
+   *  models, whichever of the two records comes first. */
+  private reply(line: CursorSpoolLine, ahead: Iterable<CursorSpoolLine>): CursorAttachment {
+    const turn = isText(line.payload.generation_id, 256) ? line.payload.generation_id : undefined;
+    if (turn === undefined) return NO_CONTEXT;
+    const seen = this.conversations.get(line.conversation_id)?.thoughts.filter(thought => ofTurn(thought, turn)) ?? [];
+    const later = this.later(line, turn, ahead);
+    if (!seen.length && !later.length) return NO_CONTEXT;
+    const texts = new Set<string>();
+    for (const thought of [...seen, ...later.map(([, thought]) => thought)]) if (thought.text !== undefined) texts.add(thought.text);
+    const thoughts = [...texts].slice(-this.limits.replyThoughts).map(text => ({ text }));
+    return {
+      context: thoughts.length ? { thoughts } : {},
+      settle: () => {
+        const target = this.touch(line.conversation_id);
+        for (const thought of seen) delete thought.text;
+        const spent = (thought: CursorThought) => thought.done === true || (thought.model === undefined && thought.model_id === undefined);
+        target.thoughts = target.thoughts.filter(thought => !seen.includes(thought) || !spent(thought));
+        for (const [, thought] of later) {
+          const { text: _text, ...rest } = thought;
+          if (!spent(rest)) this.keep(target, rest);
+        }
         if (later.length) this.markUsed(target, later.map(([id]) => id));
         this.release(target);
       },
@@ -510,11 +676,55 @@ export class CursorContext {
     };
   }
 
-  /** The state to persist: a copy, least recently used first, inside every bound. */
+  /** The content of the file read with the same raw tool call id as a Read
+   *  record, whether it reached the spool before the record or just after it.
+   *  Only a Read record takes it: Cursor reuses one raw id across calls of
+   *  different tools. The entry is retired when it is used. */
+  private read(line: CursorSpoolLine, ahead: Iterable<CursorSpoolLine>): CursorAttachment {
+    const raw = line.payload.tool_use_id;
+    if (!isText(raw, 512) || !line.p.toolDetails || !this.policy.toolDetails) return NO_CONTEXT;
+    const conversation = this.conversations.get(line.conversation_id);
+    let content = conversation?.reads?.find(([id]) => id === raw)?.[1];
+    let later: string | undefined;
+    if (content === undefined) {
+      const moment = cursorTimeMs(line);
+      for (const other of ahead) {
+        if (other.hook !== "beforeReadFile" || other.conversation_id !== line.conversation_id || other.payload.tool_use_id !== raw ||
+          conversation?.used?.includes(other.id) || Math.abs(cursorTimeMs(other) - moment) > this.limits.settleMs) continue;
+        content = this.readContent(other);
+        if (content === undefined) continue;
+        later = other.id;
+        break;
+      }
+    }
+    if (content === undefined) return NO_CONTEXT;
+    return {
+      context: { read: { content } },
+      settle: () => {
+        const target = this.touch(line.conversation_id);
+        if (later !== undefined) this.markUsed(target, [later]);
+        else target.reads?.splice(target.reads.findIndex(([id]) => id === raw), 1);
+        this.release(target);
+      },
+    };
+  }
+
+  /** The state to persist: a copy, least recently used first, inside every
+   *  bound. A conversation that is over the byte bound on its own gives up the
+   *  content it holds before it is forgotten. */
   snapshot(): CursorConversation[] {
     const drop = () => this.conversations.delete(this.conversations.keys().next().value!);
+    const over = () => Buffer.byteLength(JSON.stringify([...this.conversations.values()])) > this.limits.contextBytes;
     while (this.conversations.size > this.limits.conversations) drop();
-    while (this.conversations.size && Buffer.byteLength(JSON.stringify([...this.conversations.values()])) > this.limits.contextBytes) drop();
+    while (this.conversations.size > 1 && over()) drop();
+    if (this.conversations.size && over()) {
+      for (const conversation of this.conversations.values()) {
+        delete conversation.reads;
+        for (const thought of conversation.thoughts) delete thought.text;
+        conversation.thoughts = conversation.thoughts.filter(thought => !thought.done);
+      }
+      if (over()) drop();
+    }
     return structuredClone([...this.conversations.values()]);
   }
 }

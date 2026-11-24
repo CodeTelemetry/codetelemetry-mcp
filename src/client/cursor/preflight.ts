@@ -2,7 +2,7 @@
 // key is requested and before anything is written. It only reads: the platform,
 // the Node.js version, the paths an install would use, the settings and service
 // definition already there, whether a per-user service manager answers, and
-// whether Cursor's hooks.json can take the six entries. A refusal names its
+// whether Cursor's hooks.json can take the eight entries. A refusal names its
 // reason and leaves the machine exactly as it was.
 
 import fs from "node:fs";

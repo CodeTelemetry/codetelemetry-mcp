@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { cursorPaths } from "../../src/client/cursor/config.ts";
+import { cursorHookCommand, cursorPaths } from "../../src/client/cursor/config.ts";
 import { CURSOR_HOOK_EVENTS } from "../../src/client/cursor/hookProgram.ts";
 import {
   CURSOR_HOOK_MARKER, CURSOR_HOOKS_FILE_BYTES, CursorHooksRefusal, checkCursorHooksFile, cursorHooksManualBlock,
@@ -40,7 +40,7 @@ const ours = (entry: any) => typeof entry?.command === "string" && entry.command
 function merged(text: string, command: string): Doc {
   const doc = JSON.parse(text) as Doc;
   for (const event of CURSOR_HOOK_EVENTS) {
-    doc.hooks[event] = [...(doc.hooks[event] ?? []).filter(entry => !ours(entry)), { command, timeout: 5 }];
+    doc.hooks[event] = [...(doc.hooks[event] ?? []).filter(entry => !ours(entry)), { command: cursorHookCommand(event, command), timeout: 5 }];
   }
   return doc;
 }
@@ -66,7 +66,7 @@ function refusal(action: () => unknown): CursorHooksRefusal {
 
 function assertManualBlock(message: string, command: string): void {
   for (const event of CURSOR_HOOK_EVENTS) {
-    assert.ok(message.includes(`"${event}": [{ "command": "${command}", "timeout": 5 }]`), `refusal lacks the ${event} entry`);
+    assert.ok(message.includes(`"${event}": [{ "command": "${cursorHookCommand(event, command)}", "timeout": 5 }]`), `refusal lacks the ${event} entry`);
   }
   assert.match(message, /--hooks-manual/);
 }
@@ -106,7 +106,7 @@ test("a missing hooks.json is created with one entry per event, private, and nev
   const result = installCursorHooks(s);
   assert.deepEqual(result, { path: s.hooksFile, status: "created", createdByConnect: true, backupPath: null, createdKeys: [...CURSOR_HOOK_EVENTS] });
   const text = fs.readFileSync(s.hooksFile, "utf8");
-  const expected = { version: 1, hooks: Object.fromEntries(CURSOR_HOOK_EVENTS.map(event => [event, [{ command: s.command, timeout: 5 }]])) };
+  const expected = { version: 1, hooks: Object.fromEntries(CURSOR_HOOK_EVENTS.map(event => [event, [{ command: cursorHookCommand(event, s.command), timeout: 5 }]])) };
   assert.equal(text, JSON.stringify(expected, null, 2) + "\n");
   assert.deepEqual(Object.keys(JSON.parse(text).hooks), [...CURSOR_HOOK_EVENTS]);
   assert.equal(fs.statSync(s.hooksFile).mode & 0o777, 0o600);
@@ -137,7 +137,7 @@ for (const { name, text } of CORPUS) {
     assert.deepEqual(Object.keys(doc.hooks), [...Object.keys(before.hooks), ...CURSOR_HOOK_EVENTS.filter(event => !(event in before.hooks))]);
     for (const event of CURSOR_HOOK_EVENTS) {
       const mine = doc.hooks[event]!.filter(ours);
-      assert.deepEqual(mine, [{ command: s.command, timeout: 5 }], "exactly one entry, with no failClosed");
+      assert.deepEqual(mine, [{ command: cursorHookCommand(event, s.command), timeout: 5 }], "exactly one entry, with no failClosed");
       assert.ok(ours(doc.hooks[event]!.at(-1)), "appended after the user's entries");
     }
     assert.equal(fs.statSync(s.hooksFile).mode & 0o777, 0o644, "file mode is kept");
@@ -201,7 +201,7 @@ test("the one-time backup holds the user's original and is never overwritten or 
   assert.equal(fs.existsSync(`${other.hooksFile}.codetelemetry-tmp`), false, "a leftover temporary is cleared, not followed");
 });
 
-test("a symbolic link is refused and left a link, with the six entries to paste", t => {
+test("a symbolic link is refused and left a link, with the eight entries to paste", t => {
   const s = sandbox(t), target = path.join(s.root, "dotfiles-hooks.json");
   fs.writeFileSync(target, PRETTY);
   fs.symlinkSync(target, s.hooksFile);
@@ -385,7 +385,7 @@ test("entries left by another installation are replaced, duplicates collapse and
   const installed = JSON.parse(fs.readFileSync(s.hooksFile, "utf8")) as Doc;
   assert.deepEqual(installed, merged(text, s.command));
   assert.deepEqual(installed.hooks.stop, [{ command: "/opt/fixture/bin/notify.sh" }, { command: s.command, timeout: 5 }]);
-  assert.deepEqual(installed.hooks.sessionStart, doc.hooks.sessionStart, "install touches only the six events");
+  assert.deepEqual(installed.hooks.sessionStart, doc.hooks.sessionStart, "install touches only its own events");
   assert.ok(!JSON.stringify(installed.hooks.stop).includes("failClosed"));
 
   // The user adds an entry after ours; the next install moves ours back to the end, once.
@@ -550,4 +550,71 @@ test("the pasted block is exactly what the merge writes", t => {
   assert.ok(!block.includes("failClosed"));
   installCursorHooks(s);
   assert.deepEqual(JSON.parse(`{"version": 1, ${block}}`), JSON.parse(fs.readFileSync(s.hooksFile, "utf8")));
+});
+
+test("the two content events: a reply runs the ordinary launcher, a file read runs the one that answers Cursor", t => {
+  const s = sandbox(t);
+  assert.deepEqual([...CURSOR_HOOK_EVENTS], ["beforeSubmitPrompt", "postToolUse", "postToolUseFailure", "stop", "afterAgentThought", "afterShellExecution",
+    "afterAgentResponse", "beforeReadFile"]);
+  const read = path.join(path.dirname(s.command), "hook-read.sh");
+  installCursorHooks(s);
+  const doc = JSON.parse(fs.readFileSync(s.hooksFile, "utf8")) as Doc;
+  assert.deepEqual(doc.hooks.afterAgentResponse, [{ command: s.command, timeout: 5 }]);
+  assert.deepEqual(doc.hooks.beforeReadFile, [{ command: read, timeout: 5 }]);
+  assert.ok(read.includes(CURSOR_HOOK_MARKER), "the entry is recognized as Connect's and removed with the others");
+  for (const event of CURSOR_HOOK_EVENTS) for (const entry of doc.hooks[event]!) {
+    assert.deepEqual(Object.keys(entry), ["command", "timeout"], "no failClosed, no matcher: a failing hook lets Cursor go on");
+  }
+  // The exact command of each event is what counts as installed.
+  assert.equal(cursorHooksState(s), "installed");
+  doc.hooks.beforeReadFile = [{ command: s.command, timeout: 5 }];
+  fs.writeFileSync(s.hooksFile, JSON.stringify(doc, null, 2));
+  assert.equal(cursorHooksState(s), "partial", "the ordinary launcher under beforeReadFile is not the entry Connect installs");
+  assert.equal(installCursorHooks(s).status, "updated");
+  assert.deepEqual((JSON.parse(fs.readFileSync(s.hooksFile, "utf8")) as Doc).hooks.beforeReadFile, [{ command: read, timeout: 5 }], "a repeated install puts the right one back, once");
+  assert.equal(cursorHooksState(s), "installed");
+  assert.ok(cursorHooksManualBlock(s.command).includes(`"beforeReadFile": [{ "command": "${read}", "timeout": 5 }]`));
+  assert.ok(cursorHooksManualBlock(s.command).includes(`"afterAgentResponse": [{ "command": "${s.command}", "timeout": 5 }]`));
+});
+
+test("an installation with the six earlier entries gains the two new ones, keeps the user's hooks, and uninstall gives the user's file back", t => {
+  const s = sandbox(t);
+  const earlier = CURSOR_HOOK_EVENTS.slice(0, 6);
+  // The user's own hooks, two of them under the events Connect now also uses.
+  const user: Doc = { version: 1, hooks: {
+    stop: [{ command: "/opt/fixture/bin/notify.sh" }],
+    beforeReadFile: [{ command: "/opt/fixture/bin/guard.sh", failClosed: true }],
+    afterAgentResponse: [{ command: "/opt/fixture/bin/log-reply.sh", timeout: 30 }],
+    preToolUse: [{ command: "/opt/fixture/bin/audit.sh", matcher: "Shell" }],
+  } };
+  const text = JSON.stringify(user, null, 2) + "\n";
+  // The file as the earlier release left it: one entry under each of six events.
+  const before = JSON.parse(text) as Doc;
+  for (const event of earlier) before.hooks[event] = [...(before.hooks[event] ?? []), { command: s.command, timeout: 5 }];
+  fs.writeFileSync(s.hooksFile, JSON.stringify(before, null, 2) + "\n");
+  const createdKeys = earlier.filter(event => !(event in user.hooks));
+  assert.equal(cursorHooksState(s), "partial", "the two new entries are missing");
+
+  const result = installCursorHooks({ ...s, createdKeys });
+  assert.equal(result.status, "updated");
+  assert.deepEqual(result.createdKeys, createdKeys, "the two events the user already had are not Connect's keys");
+  const installed = JSON.parse(fs.readFileSync(s.hooksFile, "utf8")) as Doc;
+  assert.deepEqual(installed, merged(text, s.command));
+  assert.deepEqual(installed.hooks.beforeReadFile, [{ command: "/opt/fixture/bin/guard.sh", failClosed: true },
+    { command: path.join(path.dirname(s.command), "hook-read.sh"), timeout: 5 }], "the user's own guard stays first and unchanged");
+  assert.deepEqual(installed.hooks.afterAgentResponse, [{ command: "/opt/fixture/bin/log-reply.sh", timeout: 30 }, { command: s.command, timeout: 5 }]);
+  assert.deepEqual(installed.hooks.preToolUse, user.hooks.preToolUse);
+  for (const event of CURSOR_HOOK_EVENTS) assert.equal(installed.hooks[event]!.filter(ours).length, 1, `${event} holds one entry of ours`);
+  assert.equal(cursorHooksState(s), "installed");
+
+  // Idempotent: a second and a third install write nothing.
+  const bytes = fs.readFileSync(s.hooksFile), stat = fs.statSync(s.hooksFile);
+  for (let round = 0; round < 2; round++) assert.equal(installCursorHooks({ ...s, createdKeys: result.createdKeys }).status, "unchanged");
+  assert.deepEqual(fs.readFileSync(s.hooksFile), bytes);
+  assert.equal(fs.statSync(s.hooksFile).mtimeMs, stat.mtimeMs);
+
+  assert.equal(removeCursorHooks({ hooksFile: s.hooksFile, createdKeys: result.createdKeys }).status, "updated");
+  assert.equal(fs.readFileSync(s.hooksFile, "utf8"), text, "every entry of ours is gone, and nothing else");
+  assert.equal(cursorHooksState(s), "missing");
+  assert.equal(removeCursorHooks({ hooksFile: s.hooksFile, createdKeys: result.createdKeys }).status, "unchanged");
 });

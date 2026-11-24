@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import {
+import { cursorHookCommand,
   CURSOR_CONFIG_BYTES, cursorCaptureSummary, cursorNetworkFromEnv, cursorNodePaths, cursorPaths, cursorPolicy, cursorProxyDisplay,
   cursorShareFiles, cursorStateFiles, isSafeCursorPath, readCursorConfig, readCursorKey, readCursorSummary, resolveCursorConfigPath,
   updateCursorConfig, writeCursorConfig, writeCursorFileAtomic, type CursorConfig,
@@ -17,8 +17,8 @@ const KEY = "cot_" + "synthetic".repeat(4);
 const INGEST = "https://ingest.example.invalid";
 const NODE = { execPath: "/opt/fixture/node-v24/bin/node", commandPath: "/opt/fixture/bin/node" };
 /** The mode line with both options on, and with both off. */
-const MODE_ON = "Capture: prompt text, tool commands, file paths and workspace path (turn off: login --client cursor --no-enrich). Developer email: sent (turn off: login --client cursor --no-identity).";
-const MODE_OFF = "Capture: metadata only (turn on prompt text and tool details: login --client cursor --enrich). Developer email: not sent (turn on: login --client cursor --identity).";
+const MODE_ON = "Capture: prompt text, reply text and reasoning, tool commands, tool output, file paths, file content and workspace path (turn off: login --client cursor --no-enrich). Developer email: sent (turn off: login --client cursor --no-identity).";
+const MODE_OFF = "Capture: metadata only (turn on prompt and reply text and tool details: login --client cursor --enrich). Developer email: not sent (turn on: login --client cursor --identity).";
 
 function sandbox(t: TestContext) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "cursor-config-"));
@@ -38,10 +38,16 @@ test("every default path derives from the home directory and none is inside Curs
     hooksFile: path.join(s.home, ".cursor/hooks.json"),
     hooksBackup: path.join(s.home, ".cursor/hooks.json.codetelemetry-backup"),
     hook: path.join(s.home, ".local/share/codetelemetry/cursor-hooks-v1/hook.sh"),
+    readHook: path.join(s.home, ".local/share/codetelemetry/cursor-hooks-v1/hook-read.sh"),
     hookProgram: path.join(s.home, ".local/share/codetelemetry/cursor-hooks-v1/hook.cjs"),
     collectorLauncher: path.join(s.home, ".local/share/codetelemetry/cursor-hooks-v1/collector.sh"),
   });
-  assert.deepEqual(cursorShareFiles("/x"), { hook: "/x/hook.sh", hookProgram: "/x/hook.cjs", collectorLauncher: "/x/collector.sh" });
+  assert.deepEqual(cursorShareFiles("/x"), { hook: "/x/hook.sh", readHook: "/x/hook-read.sh", hookProgram: "/x/hook.cjs", collectorLauncher: "/x/collector.sh" });
+  // The command of a file read is the launcher beside the ordinary one; every other event runs the ordinary one.
+  assert.equal(cursorHookCommand("beforeReadFile", "/x/hook.sh"), "/x/hook-read.sh");
+  for (const event of ["beforeSubmitPrompt", "postToolUse", "postToolUseFailure", "stop", "afterAgentThought", "afterShellExecution", "afterAgentResponse"]) {
+    assert.equal(cursorHookCommand(event, "/x/hook.sh"), "/x/hook.sh", event);
+  }
   assert.deepEqual(cursorStateFiles("/s"), { spool: "/s/spool", dropped: "/s/dropped", nodePath: "/s/node-path", nodeStale: "/s/node-stale",
     checkpoint: "/s/checkpoint.json", pending: "/s/pending.json", health: "/s/health.json", lock: "/s/collector.lock", rejected: "/s/rejected" });
   assert.ok(cursorPaths().config.startsWith(os.homedir() + path.sep), "the default home is the isolated test home");
@@ -135,10 +141,10 @@ test("the mode line names exactly what is captured and the command that changes 
   const line = (prompts: boolean, toolDetails: boolean, email: boolean) => cursorCaptureSummary({ content: { prompts, toolDetails }, identity: { email } });
   assert.equal(line(false, false, false), MODE_OFF);
   assert.equal(line(true, true, true), MODE_ON);
-  assert.equal(line(true, true, false), "Capture: prompt text, tool commands, file paths and workspace path (turn off: login --client cursor --no-enrich). Developer email: not sent (turn on: login --client cursor --identity).");
-  assert.equal(line(false, false, true), "Capture: metadata only (turn on prompt text and tool details: login --client cursor --enrich). Developer email: sent (turn off: login --client cursor --no-identity).");
-  assert.equal(line(true, false, false), "Capture: prompt text (turn off: login --client cursor --no-enrich). Developer email: not sent (turn on: login --client cursor --identity).");
-  assert.equal(line(false, true, true), "Capture: tool commands, file paths and workspace path (turn off: login --client cursor --no-enrich). Developer email: sent (turn off: login --client cursor --no-identity).");
+  assert.equal(line(true, true, false), "Capture: prompt text, reply text and reasoning, tool commands, tool output, file paths, file content and workspace path (turn off: login --client cursor --no-enrich). Developer email: not sent (turn on: login --client cursor --identity).");
+  assert.equal(line(false, false, true), "Capture: metadata only (turn on prompt and reply text and tool details: login --client cursor --enrich). Developer email: sent (turn off: login --client cursor --no-identity).");
+  assert.equal(line(true, false, false), "Capture: prompt text, reply text and reasoning (turn off: login --client cursor --no-enrich). Developer email: not sent (turn on: login --client cursor --identity).");
+  assert.equal(line(false, true, true), "Capture: tool commands, tool output, file paths, file content and workspace path (turn off: login --client cursor --no-enrich). Developer email: sent (turn off: login --client cursor --no-identity).");
 });
 
 test("a rerun keeps the stored network settings, new values replace them, and they can be cleared", t => {
