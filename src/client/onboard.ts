@@ -55,7 +55,7 @@ export type OnboardOptions = {
   kiroService?: KiroServiceOptions;
   /** Cursor only. `identity` sends the Cursor account email; like
    *  `settings.enrich` it is true, false, or undefined to keep the stored
-   *  choice. `hooksOnly` installs no service, `hooksManual` leaves hooks.json
+   *  choice (on for a first install). `hooksOnly` installs no service, `hooksManual` leaves hooks.json
    *  unedited, `clearNetwork` forgets recorded proxy settings. */
   cursor?: { identity?: boolean; hooksOnly?: boolean; hooksManual?: boolean; clearNetwork?: boolean; host?: CursorHost };
   /** Receives human-facing, already-masked progress lines. */
@@ -158,6 +158,10 @@ export async function onboard(opts: OnboardOptions): Promise<OnboardResult> {
       ok: true,
       detail: `${settings.created ? "created" : "updated"} ${settings.path} (${settings.wrote.length} ${client.noun})`,
     });
+    if (settings.notice) {
+      steps.push({ name: "capture_changed", ok: true, detail: settings.notice });
+      log(settings.notice);
+    }
     log(`Wrote ${settings.wrote.length} ${client.noun} to ${settings.path}${settings.backupPath ? ` (backup: ${settings.backupPath})` : ""}`);
   }
 

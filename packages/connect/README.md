@@ -11,9 +11,15 @@ use `--no-enrich` to opt out. Saved choices survive resumption. Personal onboard
 and repository-observation defaults are unchanged. See the repository README for
 privacy, client setup and service removal.
 
+Kiro collects metadata only by default. `login --client kiro --enrich` also sends
+prompt text and supported tool arguments, with the same best-effort credential
+scrubbing as Cursor: a shell command that passes a secret as an argument is
+withheld whole, which also withholds harmless commands such as `psql -p 5432`.
+`--no-enrich` turns capture off again; with neither flag the stored choice is kept.
+
 ## Organization projects
 
-Use `npx -y @codetelemetry/connect@0.5.0 join --organization-id tm_example --client codex --project .`
+Use `npx -y @codetelemetry/connect@0.6.0 join --organization-id tm_example --client codex --project .`
 from the project you choose, or use `--client claude`. Approve the displayed existing
 organization and follow the saved workspace's launch instructions. New connections
 capture prompts and supported tool content; `--no-enrich` opts out on new setup.
@@ -27,20 +33,26 @@ expires after 24 hours. Existing import deduplication and resumability still app
 
 ## Cursor
 
-`npx -y @codetelemetry/connect login --client cursor` adds six entries to
+`npx -y @codetelemetry/connect login --client cursor` adds eight entries to
 `~/.cursor/hooks.json` (your other hooks are kept), installs a hook program and
 starts a background collector: a systemd user service on Linux, a LaunchAgent on
 macOS. Run it on the machine where the workspace lives; with Remote-SSH, WSL or a
 Dev Container, Cursor runs hooks on that host. Requires Node.js 24 or newer.
 Verified on Linux. macOS is in preview. Windows is not supported.
 
-By default only metadata is collected: prompt length, tool names, durations, exit
-codes, models and token counts. `--enrich` also sends prompt text, tool commands,
-file paths and the workspace path, with best-effort scrubbing of text that looks
-like a credential (a secret in an unrecognized shape is sent as typed);
-`--identity` also sends your Cursor account email. `--no-enrich` and `--no-identity` turn them off again. File contents, command
-output, model replies and reasoning are never collected. Headless runs
-(`cursor-agent -p`) report tools and durations, but no prompts and no tokens.
+A new install sends prompt text, the reply and the model's reasoning for each
+turn, tool commands, tool output, the error text of a failed call, file paths, the
+content of files read and written, the workspace path and your Cursor account
+email, with prompt length, tool names, durations, exit codes, models and token
+counts. `--no-enrich` stops the prompt, reply and reasoning text, tool commands,
+tool output, error text, file paths, file content and workspace path;
+`--no-identity` stops the email. `--enrich` and `--identity` turn them back on,
+and a later `login` with neither flag keeps the stored choice. Text that looks
+like a credential is scrubbed on a best-effort basis; a secret in an unrecognized
+shape is sent as typed. Headless runs (`cursor-agent -p`) report tools, their
+output and durations, but no prompts, no replies and no tokens. After upgrading
+Connect, run `login --client cursor` again to install the current hook program
+and hook entries.
 
 `cursor status` shows collector, hook and delivery health. `cursor uninstall`
 removes the hooks, the hook program, the launchers and the service and lists every

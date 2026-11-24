@@ -155,7 +155,7 @@ const CURSOR_USE_CONNECT = {
   ok: false as const,
   error: "use_connect_cli",
   message:
-    "This tool does not set up Cursor. Ask the user to run `npx -y @codetelemetry/connect login --client cursor` in a terminal on the machine where the Cursor workspace lives (with Remote-SSH, WSL or a Dev Container that is the remote host, not the laptop). The command opens a browser to approve, adds six hook entries to ~/.cursor/hooks.json, keeping the user's other hooks, and starts a background collector. It collects metadata only unless the user adds --enrich (prompt text, tool commands, file paths, workspace path) or --identity (their Cursor account email). Requires Node.js 24 or newer on Linux or macOS. Afterwards, status with client \"cursor\" shows whether its settings are in place.",
+    "This tool does not set up Cursor. Ask the user to run `npx -y @codetelemetry/connect login --client cursor` in a terminal on the machine where the Cursor workspace lives (with Remote-SSH, WSL or a Dev Container that is the remote host, not the laptop). The command opens a browser to approve, adds eight hook entries to ~/.cursor/hooks.json, keeping the user's other hooks, and starts a background collector. A new install sends prompt text, the reply and reasoning of each turn, tool commands, tool output, file paths, the content of files read and written, the workspace path and the user's Cursor account email; --no-enrich turns everything but the email off and --no-identity turns the email off. An existing install keeps its stored choices unless a flag is passed. Requires Node.js 24 or newer on Linux or macOS. Afterwards, status with client \"cursor\" shows whether its settings are in place.",
 };
 
 const pickClient = (args: Record<string, unknown>): OnboardClient => (isOnboardClient(args.client) ? args.client : "claude");
@@ -944,12 +944,12 @@ export const TOOLS: ToolDef[] = [
         key: ctx.session.useKey(),
         ingestEndpoint: endpointsFor(ctx).ingestEndpoint,
         configPath: configPathFor(client, args, ctx, requested.path),
-        enrich: args.enrich === true,
+        enrich: typeof args.enrich === "boolean" ? args.enrich : undefined,
           repositoryObservation: args.repositoryObservation === true,
       });
       return {
         ok: true, path: r.path, wrote: r.wrote, backupPath: r.backupPath, created: r.created,
-        ...(client === "pi" ? { note: PI_EXTENSION_HINT } : {}),
+        ...(client === "pi" ? { note: PI_EXTENSION_HINT } : r.notice ? { note: r.notice } : {}),
       };
     },
   },
@@ -1021,7 +1021,7 @@ export const TOOLS: ToolDef[] = [
           scope: args.scope === "project" ? "project" : "user",
           // A host's trusted override outranks the model's `path`.
           path: ctx.configPathsOverride?.[client] ?? requested.path,
-          enrich: args.enrich === true,
+          enrich: typeof args.enrich === "boolean" ? args.enrich : undefined,
           repositoryObservation: args.repositoryObservation === true,
         },
         verifyTimeoutMs: typeof args.timeoutMs === "number" ? args.timeoutMs : undefined,
@@ -2121,7 +2121,7 @@ export const TOOLS: ToolDef[] = [
       "ALWAYS call it first with dryRun true (the default) and show the user the summary — sessions, tokens, what is skipped and the content setting — then ask before calling again with dryRun false. " +
       "Sessions already captured live or already imported are skipped; an interrupted import resumes. Each call sends at most maxSessions; while `remaining` > 0, call again. " +
       "A persistent workspace restricts imports to its bound project and coding client; it never falls back to a personal or machine-wide destination. " +
-      "Imported history has tokens, prompts and tool calls (name, outcome and, as content allows, input) but no tool output, per-request latency, retries, permission decisions or active time. " +
+      "Imported history has tokens, prompts and tool calls (name, outcome and, as content allows, input). " +
       "Imported tokens are billed like live usage (this month's included seat tokens first, then the per-million price from prepaid credit): when the server reports billing state, `billing` gives the run's estimated cost and whether the credit covers it, and a real import starts no session the credit cannot cover (stoppedBy budget). estimate_history prices the whole local history without a key. " +
       "Rows carry the signed-in account's identity as live rows do, shown masked in `identity`; identity false omits it. " +
       "content defaults to live: exactly the prompt / tool text the user's live exporters are configured to send (Claude OTEL_LOG_USER_PROMPTS / OTEL_LOG_TOOL_DETAILS, Codex log_user_prompt); none sends no text; all sends prompt text and tool inputs regardless — only with the user's explicit agreement.",

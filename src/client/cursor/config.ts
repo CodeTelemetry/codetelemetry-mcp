@@ -72,10 +72,20 @@ export function cursorPaths(home: string = os.homedir()) {
   };
 }
 
-/** The three owned executables. `hook` is the command written to hooks.json. */
+/** The command of one hook event, given the launcher's path: `hook-read.sh`
+ *  beside it for `beforeReadFile`, whose command answers Cursor, and the
+ *  launcher itself for every other event. */
+export function cursorHookCommand(event: string, command: string): string {
+  return event === "beforeReadFile" ? path.join(path.dirname(command), "hook-read.sh") : command;
+}
+
+/** The owned executables. `hook` is the command written to hooks.json, and
+ *  `readHook` the one written under `beforeReadFile`. */
 export function cursorShareFiles(shareDir: string) {
+  const hook = path.join(shareDir, "hook.sh");
   return {
-    hook: path.join(shareDir, "hook.sh"),
+    hook,
+    readHook: cursorHookCommand("beforeReadFile", hook),
     hookProgram: path.join(shareDir, "hook.cjs"),
     collectorLauncher: path.join(shareDir, "collector.sh"),
   };
@@ -302,14 +312,19 @@ export const cursorPolicy = (config: Pick<CursorConfig, "content" | "identity">)
   email: config.identity.email,
 });
 
-/** The mode line `login` and `cursor status` print. */
+/** The mode line `login` and `cursor status` print: what is sent, and the
+ *  command that changes each choice. */
 export function cursorCaptureSummary(config: Pick<CursorConfig, "content" | "identity">): string {
   const { prompts, toolDetails } = config.content;
-  const capture = prompts && toolDetails ? "prompt text, tool commands, file paths and workspace path (--enrich)"
-    : prompts ? "prompt text"
-      : toolDetails ? "tool commands, file paths and workspace path"
-        : "metadata only";
-  return `Capture: ${capture}. Developer email: ${config.identity.email ? "sent (--identity)" : "not sent"}.`;
+  const login = "login --client cursor";
+  const off = `turn off: ${login} --no-enrich`;
+  const text = "prompt text, reply text and reasoning";
+  const tools = "tool commands, tool output, file paths, file content and workspace path";
+  const capture = prompts && toolDetails ? `${text}, ${tools} (${off})`
+    : prompts ? `${text} (${off})`
+      : toolDetails ? `${tools} (${off})`
+        : `metadata only (turn on prompt and reply text and tool details: ${login} --enrich)`;
+  return `Capture: ${capture}. Developer email: ${config.identity.email ? `sent (turn off: ${login} --no-identity)` : `not sent (turn on: ${login} --identity)`}.`;
 }
 
 export type CursorWriteOptions = {
@@ -317,7 +332,7 @@ export type CursorWriteOptions = {
   ingestEndpoint: string;
   configPath: string;
   /** true captures prompt text and tool details, false turns both off, and
-   *  undefined keeps the stored choice (off on a first install). */
+   *  undefined keeps the stored choice (on for a first install). */
   enrich?: boolean;
   /** Same three states for the Cursor account email. */
   identity?: boolean;
@@ -342,7 +357,7 @@ export function writeCursorConfig(opts: CursorWriteOptions): CursorWriteResult {
   const file = resolveCursorConfigPath({ path: opts.configPath });
   const exists = fs.existsSync(file), prior = exists ? readCursorConfig(file) : null;
   const defaults = cursorPaths(opts.home);
-  const choose = (flag: boolean | undefined, stored: boolean | undefined) => flag ?? stored ?? false;
+  const choose = (flag: boolean | undefined, stored: boolean | undefined) => flag ?? stored ?? true;
   const network: Record<string, unknown> = { ...(opts.clearNetwork ? {} : prior?.network) };
   for (const [name, value] of Object.entries(opts.network ?? {})) if (value !== undefined) network[name] = value;
   const config: CursorConfig = {

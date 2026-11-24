@@ -32,7 +32,7 @@ deterministic (see [Releases & discovery](#releases--discovery)):
 ```json
 {
   "mcpServers": {
-    "codetelemetry": { "command": "npx", "args": ["-y", "--package=@codetelemetry/mcp@0.9.0", "codetelemetry-mcp"] }
+    "codetelemetry": { "command": "npx", "args": ["-y", "--package=@codetelemetry/mcp@0.10.0", "codetelemetry-mcp"] }
   }
 }
 ```
@@ -46,7 +46,7 @@ sessions without local setup, or **Connect my coding tool** to record your own w
 Run the project connection command from the repository you choose:
 
 ```sh
-npx -y @codetelemetry/connect@0.5.0 join --organization-id tm_example --client codex --project .
+npx -y @codetelemetry/connect@0.6.0 join --organization-id tm_example --client codex --project .
 # For Claude Code, use --client claude.
 ```
 
@@ -68,9 +68,9 @@ verification. **My sessions** is scoped to your authenticated ingest ownership;
 Optional history import uses the saved project and credentials, without a key argument:
 
 ```sh
-npx -y @codetelemetry/connect@0.5.0 import --workspace <name> --preview
+npx -y @codetelemetry/connect@0.6.0 import --workspace <name> --preview
 # Choose numbers from that preview; no session content uploads until confirmation:
-npx -y @codetelemetry/connect@0.5.0 import --workspace <name> --select 1,2 --confirm
+npx -y @codetelemetry/connect@0.6.0 import --workspace <name> --select 1,2 --confirm
 ```
 
 Preview is local-only and defaults to the last 30 days. It keeps at most 100 session
@@ -190,7 +190,7 @@ contexts use the established scope-v1 device flow.
 
 ## Cursor
 
-Cursor has no OpenTelemetry settings to write. Connect installs six hooks and a
+Cursor has no OpenTelemetry settings to write. Connect installs eight hooks and a
 background collector instead:
 
 ```sh
@@ -210,7 +210,7 @@ version, a per-user service manager, the paths it would use, and whether
 nothing. After approval it asks the ingest endpoint whether it accepts Cursor
 records, and stores nothing when the answer is no. Then, in this order, it writes
 its settings, installs the hook program, starts the collector (a systemd user
-service on Linux, a LaunchAgent on macOS) and adds one entry under each of six
+service on Linux, a LaunchAgent on macOS) and adds one entry under each of eight
 events in `~/.cursor/hooks.json`. Your other hooks are kept, and the file is copied
 once to `hooks.json.codetelemetry-backup` before the first edit. An install that
 fails part-way removes what it wrote, or puts the previous installation back. The
@@ -218,21 +218,40 @@ command then sends a test event, waits for it to arrive, and prints what it
 installed, where, the capture mode and how to remove it. The Cursor IDE picks the hooks up at once; restart any running
 `cursor-agent` session.
 
-| Option | What is sent |
-| --- | --- |
-| none (default) | Metadata only: prompt length, tool names, durations, exit codes, sizes, models and token counts. A session then shows no repository and no developer. |
-| `--enrich` | Also prompt text, the input of shell, read, write, search and task calls (commands, file paths, patterns and their options) and the workspace path, which gives a session its repository. Credential scrubbing is best effort: text in a known credential shape (key blocks, bearer and authorization values, assignments to secret-named variables, common token formats, passwords in URLs) is removed from prompts, and a tool input that holds such text, or a command that passes a password option, is withheld whole. A secret in a shape the patterns do not know is sent as typed, so leave `--enrich` off where prompts or commands may carry secrets. |
-| `--identity` | Also your Cursor account email, which puts your sessions under your name. |
+A new install sends everything in this table. Each flag turns one row off.
 
-File contents, command output, model replies and reasoning are never collected.
-`--no-enrich` and `--no-identity` turn an option off; with neither flag the current
-choice is kept. Records captured while an option was on and not yet sent are
-reduced before they are sent. Headless runs (`cursor-agent -p`) report tools and
-durations, but no prompts and no tokens. Cursor's cloud and background agents do
+| What is sent | Turn it off |
+| --- | --- |
+| Prompt length, tool names, durations, exit codes, sizes, models and token counts. | `cursor disable` |
+| Prompt text, the reply of each turn and the model's reasoning. The input of shell, read, write, search and task calls (commands, file paths, patterns and their options), each tool's output, the error text of a failed call, the content of the files the agent reads and writes, and the workspace path, which gives a session its repository. A session then replays as the other assistants' sessions do: what was asked, what the model thought and answered, what each tool ran and returned. Tool output, error text and file content are cut to 8,192 characters each, a reply to 16,384, and reasoning to the newest 32 thoughts of a turn at 2,048 characters each. Credential scrubbing is best effort: text in a known credential shape (key blocks, bearer and authorization values, assignments to secret-named variables, common token formats, passwords in URLs) is replaced in prompts, replies, reasoning, tool output, error text and file content before anything is stored on disk, and a tool input that holds such text, or a command that passes a password option, is withheld whole, with the content a write carried. A secret in a shape the patterns do not know is sent as typed, so pass `--no-enrich` where prompts, commands, output or files may carry secrets. | `--no-enrich` |
+| Your Cursor account email, which puts your sessions under your name. | `--no-identity` |
+
+```sh
+npx -y @codetelemetry/connect login --client cursor --no-enrich --no-identity   # metadata only
+```
+
+`--enrich` and `--identity` turn an option back on. A later `login` with neither
+flag keeps the stored choice, so an install made before these options were on by
+default stays as it was until you pass `--enrich` or `--identity`. `login` and
+`cursor status` print the current choice. With `--no-enrich` a session shows no
+repository, and with `--no-identity` no developer. Records captured while an
+option was on and not yet sent are reduced before they are sent. Headless runs (`cursor-agent -p`) report tools, their
+output and durations, but no prompts, no replies and no tokens. Cursor's cloud and background agents do
 not run user-level hooks, so they report nothing.
 
+After upgrading Connect, run `login --client cursor` again. It installs the current
+hook program and adds the hook entries a newer version uses; until then
+`cursor status` reports that `hooks.json` holds only some of the entries, and the
+session parts the missing hooks supply (the reply and reasoning of a turn, the
+content of a file read) are not collected.
+
 The hook runs inside the editor, so it is small and cannot block it: it makes no
-network call, gives up after 1.5 seconds and always exits 0. It appends one record
+network call, gives up after 1.5 seconds and always exits 0. Cursor waits for an
+answer from one of the eight events, `beforeReadFile`, which is where it hands a
+hook the content of a file the agent reads. That entry runs `hook-read.sh`, which
+prints `{"permission":"allow"}` as its first act and then records the content, so
+the read goes ahead whatever happens to the recording; with `--no-enrich` it
+prints that line and starts nothing. The hook appends one record
 to a local spool; the collector sends the spool in batches, at most four requests
 a minute, so a turn reaches the dashboard about 15 to 35 seconds after it ends.
 Unsent records wait in the spool for up to 14 days. The spool holds at most
@@ -249,10 +268,10 @@ supported, and Connect does not detect one.
 | Path | Holds |
 | --- | --- |
 | `~/.config/codetelemetry/cursor-hooks-v1.json` (and `.previous`) | settings and the ingest key in plain text, mode 0600 |
-| `~/.local/share/codetelemetry/cursor-hooks-v1/` | `hook.sh`, `hook.cjs`, `collector.sh` and the collector's own copy of Connect |
-| `~/.local/state/codetelemetry/cursor-hooks-v1/` | the spool, the batch being sent, refused batches and collector state; with `--enrich` these hold prompt text and commands |
+| `~/.local/share/codetelemetry/cursor-hooks-v1/` | `hook.sh`, `hook-read.sh`, `hook.cjs`, `collector.sh` and the collector's own copy of Connect |
+| `~/.local/state/codetelemetry/cursor-hooks-v1/` | the spool, the batch being sent, refused batches and collector state; these hold prompt and reply text, commands, tool output and file content unless you installed with `--no-enrich` |
 | `~/.config/systemd/user/codetelemetry-cursor-hooks.service` or `~/Library/LaunchAgents/com.codetelemetry.cursor-hooks.plist` | the collector service |
-| `~/.cursor/hooks.json` | six CodeTelemetry entries beside your own |
+| `~/.cursor/hooks.json` | eight CodeTelemetry entries beside your own |
 | `~/.cursor/hooks.json.codetelemetry-backup` | your file as it was before the first edit |
 
 ```sh
@@ -281,7 +300,7 @@ apart from removing its own entries.
   launcher it prints, `/bin/sh ~/.local/share/codetelemetry/cursor-hooks-v1/collector.sh`,
   under the host's own supervisor or in a terminal that stays open.
 - **A `hooks.json` Connect will not rewrite** (a symbolic link, or a file with
-  comments or trailing commas). The refusal prints the six entries;
+  comments or trailing commas). The refusal prints the eight entries;
   `--hooks-manual` installs everything except that edit.
 - **A Node.js upgrade removed the interpreter.** Hooks keep working through
   `PATH` and tell the collector where Node.js is now. `cursor status` then reports
@@ -351,8 +370,10 @@ npx -y @codetelemetry/connect public-sessions events s-4f9c --limit 10
 ```
 
 A `pub_…` id an owner shared works in place of a sample id. Without any client,
-anonymous MCP hosts can connect to `https://codetelemetry.com/public-mcp` once it
-is enabled; it serves the same three read tools.
+any MCP host can connect to `https://codetelemetry.com/public-mcp` (Streamable
+HTTP, no sign-in); it serves the same three read tools. Publishing, what becomes
+public, and the limits are described in the
+[public sessions guide](https://codetelemetry.com/docs/integrations/public-sessions).
 
 GitHub PR gate flow, run from inside the repository to gate:
 `configure_github_pr_gate { addRepositories: ["owner/repo"], enabled: true }` →
@@ -818,6 +839,36 @@ Kiro reads local V3 transcripts with prompt/tool content disabled by default;
 `--enrich` explicitly opts into those fields. Linux/macOS support an owned user
 service; Windows uses foreground `kiro collect`. Configuration lives separately
 from Kiro itself. Checkpoints and owned runtime files survive service removal.
+
+With `--enrich`, Kiro sends prompt text and the arguments of shell, read, write and
+replace calls. Credential scrubbing is best effort and uses the same rules as the
+Cursor collector: text in a known credential shape (key blocks, bearer and
+authorization values with their scheme word, assignments to secret-named variables,
+`X-...:` request headers, a password given in prose, common token formats, a
+password in a URL of any scheme) is replaced in prompts, and a tool input that
+holds such text is withheld whole. A shell command that passes a secret as an
+argument (`curl -u name:password`, an authenticating `-H` header, `mysql -p...`,
+`docker login -p`, an option named for a secret) is also withheld whole. That rule
+cannot tell a password from another use of the same option, so harmless commands
+such as `psql -p 5432` or `zip -p` are withheld too; the call is still reported
+with its tool name and result. A secret in a shape the patterns do not know is
+sent as typed, so leave `--enrich` off where prompts or commands may carry secrets.
+
+`login --client kiro --no-enrich` turns capture off again; with neither flag the
+stored choice is kept. A login that changes the choice, in either direction, says
+so and records the choice it replaced. Kiro does not rewrite an upload that was
+already prepared. When the collector next starts, it discards the one unsent
+upload prepared under the replaced choice and reads those records again under the
+new one; source offsets advance only on acknowledgement, so no record is lost and
+no manual step is needed. An upload that was being sent while the choice changed
+may already have reached the service; its records are then sent a second time,
+in the new form.
+
+An unsent upload whose capture choice differs from the current one for any other
+reason, such as a hand-edited configuration, is still refused: the collector
+stops with `invalid Kiro retry spool contract` and sends nothing. Removing
+`pending.json` from the collector's state directory makes it read those records
+again under the current choice.
 
 The Kiro collector sends bounded, sanitized source records. Event interpretation,
 call/result association, usage aggregation and analytics run in the service.

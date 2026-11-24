@@ -20,7 +20,7 @@ import { ONBOARD_CLIENTS, SESSION_FILTER_ASSISTANTS } from "../../src/client/ass
 import { CURSOR_NODE_NOTICE, checkCursorFormat, cursorNodeNotice, cursorStatus, runCursorCommand,
   type CursorCommandHost } from "../../src/client/cursor/command.ts";
 import { CURSOR_PLATFORM_NOTE, CURSOR_SERVICE, CursorPreflightRefusal, cursorPreflight } from "../../src/client/cursor/preflight.ts";
-import { cursorPaths, cursorStateFiles, readCursorConfig } from "../../src/client/cursor/config.ts";
+import { cursorPaths, cursorStateFiles, readCursorConfig, updateCursorConfig } from "../../src/client/cursor/config.ts";
 import { cursorDestinationHash, writeCursorHealth, type CursorHealth } from "../../src/client/cursor/collector.ts";
 import { CURSOR_HOOK_EVENTS, CURSOR_HOOK_LIMITS } from "../../src/client/cursor/hookProgram.ts";
 import { cursorHooksManualBlock } from "../../src/client/cursor/hooksFile.ts";
@@ -122,6 +122,10 @@ const mode = (file: string): number => fs.lstatSync(file).mode & 0o777;
 
 type SandboxOptions = { platform?: NodeJS.Platform; nodeVersion?: string; prefix?: string; env?: NodeJS.ProcessEnv };
 
+/** The mode line with both options on, and with both off. */
+const MODE_ON = "Capture: prompt text, reply text and reasoning, tool commands, tool output, file paths, file content and workspace path (turn off: login --client cursor --no-enrich). Developer email: sent (turn off: login --client cursor --no-identity).";
+const MODE_OFF = "Capture: metadata only (turn on prompt and reply text and tool details: login --client cursor --enrich). Developer email: not sent (turn on: login --client cursor --identity).";
+
 function sandbox(t: TestContext, opts: SandboxOptions = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), opts.prefix ?? "cursor-onboard-"));
   const fixtures = fs.mkdtempSync(path.join(os.tmpdir(), "cursor-onboard-fixtures-"));
@@ -219,12 +223,13 @@ test("the steps run in order: the format is checked before anything is written, 
   const launcher = fs.readFileSync(s.paths.collectorLauncher, "utf8");
   assert.match(launcher, new RegExp(`runtime-[a-f0-9]{16}/bin\\.ts' cursor collect --settings '${s.paths.config}'`));
   assert.deepEqual(Object.keys(s.hooks()).sort(), [...CURSOR_HOOK_EVENTS].sort());
-  for (const event of CURSOR_HOOK_EVENTS) assert.deepEqual(s.hooks()[event], [{ command: s.paths.hook, timeout: 5 }]);
+  for (const event of CURSOR_HOOK_EVENTS) assert.deepEqual(s.hooks()[event], [{ command: event === "beforeReadFile" ? s.paths.readHook : s.paths.hook, timeout: 5 }]);
+  assert.equal(mode(s.paths.readHook), 0o700);
   assert.ok(!fs.readFileSync(s.paths.hooksFile, "utf8").includes("failClosed"));
 
   const config = s.config();
   assert.deepEqual([config.enabled, config.content, config.identity, config.createdByConnect],
-    [true, { prompts: false, toolDetails: false }, { email: false }, true]);
+    [true, { prompts: true, toolDetails: true }, { email: true }, true]);
   assert.deepEqual([mode(s.paths.config), mode(s.paths.hook), mode(s.paths.hookProgram), mode(s.paths.collectorLauncher), mode(s.unit),
     mode(s.paths.shareDir), mode(s.paths.stateDir)], [0o600, 0o700, 0o700, 0o700, 0o600, 0o700, 0o700]);
   assert.ok(!fs.existsSync(path.join(s.paths.shareDir, "collector.lock")), "the install lock is released");
@@ -233,13 +238,13 @@ test("the steps run in order: the format is checked before anything is written, 
   const printed = s.log.join("\n");
   assert.match(printed, /Installed for Cursor:/);
   for (const location of [s.paths.config, s.paths.shareDir, s.paths.stateDir, s.unit, s.paths.hooksFile]) assert.ok(printed.includes(`  ${location}  `), location);
-  assert.ok(printed.includes("Capture: metadata only. Developer email: not sent."));
+  assert.ok(s.log.includes(MODE_ON), "a new install prints what it sends and how to turn each off");
   assert.ok(printed.includes(CURSOR_PLATFORM_NOTE));
   assert.ok(printed.includes(`Remove everything, including the stored key and unsent records: ${PURGE}`));
-  assert.match(printed, /Headless runs \(cursor-agent -p\) report tools and durations, but no prompts and no tokens\./);
+  assert.match(printed, /Headless runs \(cursor-agent -p\) report tools, their output and durations, but no prompts, no replies and no tokens\./);
   assert.match(printed, /Remote-SSH, WSL or a Dev Container/);
   assert.deepEqual(result.cursor, {
-    installed: result.cursor!.installed, hooks: "installed", service: "started", capture: "Capture: metadata only. Developer email: not sent.", advice: [],
+    installed: result.cursor!.installed, hooks: "installed", service: "started", capture: MODE_ON, advice: [],
   });
   assert.deepEqual(result.cursor!.installed.map(item => item.path), [s.paths.config, s.paths.shareDir, s.paths.stateDir, s.unit, s.paths.hooksFile]);
   for (const text of [JSON.stringify(result), printed, s.calls.join("\n"), unit, launcher, fs.readFileSync(s.paths.hookProgram, "utf8")]) {
@@ -318,7 +323,7 @@ test("every machine refusal comes before a key is requested and writes nothing",
     assert.deepEqual(tree(s.home), before, `${item.name}: the command wrote nothing`);
   }
 
-  // The paste block names the six events and the exact command.
+  // The paste block names the eight events and the exact command of each.
   const s = sandbox(t);
   s.writeHooks(COMMENTED_HOOKS);
   const refusal = await s.install().then(() => null, error => error);
@@ -402,7 +407,7 @@ test("an install that fails midway leaves nothing behind, and a failed reinstall
   // Reinstall: every file of the working installation comes back as it was.
   const third = sandbox(t);
   third.writeHooks(FOREIGN_HOOKS);
-  await third.install();
+  await third.install({ settings: { enrich: false }, cursor: { identity: false } });
   const working = tree(third.home);
   third.manager.fails = line => line.includes(" restart ") && third.calls.filter(call => call.includes(" restart ")).length === 2;
   await assert.rejects(third.install({ settings: { enrich: true }, cursor: { identity: true } }),
@@ -425,7 +430,8 @@ test("--hooks-only installs no service, and --hooks-manual leaves hooks.json to 
   assert.equal(result.cursor!.service, "not_installed");
   assert.deepEqual(result.cursor!.advice, [`No service runs the collector (--hooks-only). Start it under your own supervisor, or in a terminal that stays open: /bin/sh ${only.paths.collectorLauncher}`]);
   assert.ok(only.log.includes(result.cursor!.advice[0]!));
-  assert.equal(Object.keys(only.hooks()).length, 6);
+  assert.equal(Object.keys(only.hooks()).length, 8);
+  assert.ok(fs.existsSync(only.paths.readHook), "the launcher of the file-read hook is installed with the other");
   const status = (await cursorStatus(only.paths.config, only.host))!;
   assert.deepEqual([status.service, status.running, status.hooks], ["not_installed", false, "installed"]);
   assert.ok(status.notices.some(notice => notice.includes(`/bin/sh ${only.paths.collectorLauncher}`)));
@@ -439,7 +445,7 @@ test("--hooks-only installs no service, and --hooks-manual leaves hooks.json to 
   assert.equal(pasted.cursor!.hooks, "missing");
   assert.equal(manual.config().createdByConnect, false);
   assert.ok(pasted.cursor!.advice[0]!.includes(cursorHooksManualBlock(manual.paths.hook)));
-  assert.match(pasted.cursor!.advice[0]!, /holds none of the six CodeTelemetry entries/);
+  assert.match(pasted.cursor!.advice[0]!, /holds none of the eight CodeTelemetry entries/);
   assert.ok(!pasted.cursor!.installed.some(item => item.path === manual.paths.hooksFile), "nothing in hooks.json is claimed as installed");
   assert.ok(fs.existsSync(manual.unit), "everything except the edit is installed");
   // The user pastes the block into the commented file: status reads it as Cursor would.
@@ -448,7 +454,7 @@ test("--hooks-only installs no service, and --hooks-manual leaves hooks.json to 
   const again = await manual.install({ cursor: { hooksManual: true, hooksOnly: true } });
   assert.deepEqual(again.cursor!.advice, [
     `--hooks-only installed no service. The collector service from an earlier login (${manual.unit}) was left as it is.`,
-    `hooks.json was not edited (--hooks-manual). ${manual.paths.hooksFile} already holds all six CodeTelemetry entries.`,
+    `hooks.json was not edited (--hooks-manual). ${manual.paths.hooksFile} already holds all eight CodeTelemetry entries.`,
   ]);
   assert.deepEqual(again.cursor!.installed.map(item => item.path), [manual.paths.config, manual.paths.shareDir, manual.paths.stateDir, manual.unit, manual.paths.hooksFile]);
   // Uninstall cannot edit that file. It says so, and removes the hook program so the entries do nothing.
@@ -463,35 +469,43 @@ test("capture options are three-state: a flag turns one on or off, no flag keeps
   const s = sandbox(t);
   const modeLine = () => s.log.filter(line => line.startsWith("Capture: ")).at(-1);
   const program = () => fs.readFileSync(s.paths.hookProgram, "utf8");
+  const stored = () => [s.config().content, s.config().identity];
+  const ON = { prompts: true, toolDetails: true }, OFF = { prompts: false, toolDetails: false };
 
   await s.install();
-  const metadataOnly = program();
-  assert.equal(modeLine(), "Capture: metadata only. Developer email: not sent.");
-
-  await s.install({ settings: { enrich: true } });
-  assert.deepEqual(s.config().content, { prompts: true, toolDetails: true });
-  const enriched = program();
-  assert.notEqual(enriched, metadataOnly, "the hook program carries the choice");
-  assert.equal(modeLine(), "Capture: prompt text, tool commands, file paths and workspace path (--enrich). Developer email: not sent.");
+  const everything = program();
+  assert.deepEqual(stored(), [ON, { email: true }], "a new install has both options on");
+  assert.equal(modeLine(), MODE_ON);
 
   await s.install();
-  assert.deepEqual(s.config().content, { prompts: true, toolDetails: true }, "no flag keeps the stored choice");
-  assert.equal(program(), enriched);
+  assert.deepEqual(stored(), [ON, { email: true }], "no flag keeps the stored choice");
+  assert.equal(program(), everything);
   assert.ok(!s.log.some(line => line.startsWith("Records captured earlier")));
 
-  await s.install({ cursor: { identity: true } });
-  assert.deepEqual([s.config().content, s.config().identity], [{ prompts: true, toolDetails: true }, { email: true }]);
-  assert.equal(modeLine(), "Capture: prompt text, tool commands, file paths and workspace path (--enrich). Developer email: sent (--identity).");
-
   await s.install({ settings: { enrich: false } });
-  assert.deepEqual([s.config().content, s.config().identity], [{ prompts: false, toolDetails: false }, { email: true }]);
-  assert.equal(modeLine(), "Capture: metadata only. Developer email: sent (--identity).");
+  assert.deepEqual(stored(), [OFF, { email: true }]);
+  assert.notEqual(program(), everything, "the hook program carries the choice");
+  assert.equal(modeLine(), "Capture: metadata only (turn on prompt and reply text and tool details: login --client cursor --enrich). Developer email: sent (turn off: login --client cursor --no-identity).");
   assert.ok(s.log.includes("Records captured earlier and not yet sent are reduced to the new setting before they are sent."));
 
   await s.install({ cursor: { identity: false } });
-  assert.equal(program(), metadataOnly, "turning both off restores the metadata-only program");
-  assert.equal(modeLine(), "Capture: metadata only. Developer email: not sent.");
-  assert.equal(s.calls.filter(call => call.includes(" restart ")).length, 6, "every login restarts the collector with the new settings");
+  const metadataOnly = program();
+  assert.deepEqual(stored(), [OFF, { email: false }]);
+  assert.equal(modeLine(), MODE_OFF);
+
+  await s.install();
+  assert.deepEqual(stored(), [OFF, { email: false }], "a stored off stays off without a flag");
+  assert.equal(program(), metadataOnly);
+  assert.equal(modeLine(), MODE_OFF, "and the line names the flag that turns each on");
+
+  await s.install({ settings: { enrich: true } });
+  assert.deepEqual(stored(), [ON, { email: false }]);
+  assert.equal(modeLine(), "Capture: prompt text, reply text and reasoning, tool commands, tool output, file paths, file content and workspace path (turn off: login --client cursor --no-enrich). Developer email: not sent (turn on: login --client cursor --identity).");
+
+  await s.install({ cursor: { identity: true } });
+  assert.equal(program(), everything, "turning both on restores the first program");
+  assert.equal(modeLine(), MODE_ON);
+  assert.equal(s.calls.filter(call => call.includes(" restart ")).length, 7, "every login restarts the collector with the new settings");
 
   // The same through the command line, where an absent flag must not read as "off".
   const silently = async (argv: string[]) => {
@@ -504,17 +518,37 @@ test("capture options are three-state: a flag turns one on or off, no flag keeps
     }
   };
   const quiet = (argv: string[]) => silently([KEY, "--client", "cursor", "--endpoint", INGEST, "--no-test", ...argv]);
-  assert.equal(await quiet(["--enrich", "--identity"]), 0);
-  assert.deepEqual([s.config().content.prompts, s.config().identity.email], [true, true]);
+  const choices = () => [s.config().content.prompts, s.config().content.toolDetails, s.config().identity.email];
+  assert.equal(await quiet(["--no-enrich"]), 0);
+  assert.deepEqual(choices(), [false, false, true]);
+  assert.equal(await quiet(["--no-identity"]), 0);
+  assert.deepEqual(choices(), [false, false, false]);
   assert.equal(await quiet([]), 0);
-  assert.deepEqual([s.config().content.prompts, s.config().identity.email], [true, true]);
+  assert.deepEqual(choices(), [false, false, false], "no flag keeps a stored off");
+  assert.equal(await quiet(["--enrich", "--identity"]), 0);
+  assert.deepEqual(choices(), [true, true, true]);
+  assert.equal(await quiet([]), 0);
+  assert.deepEqual(choices(), [true, true, true], "no flag keeps a stored on");
   assert.equal(await quiet(["--no-enrich", "--no-identity"]), 0);
-  assert.deepEqual([s.config().content.prompts, s.config().identity.email], [false, false]);
+  assert.deepEqual(choices(), [false, false, false]);
   for (const bad of [["--enrich", "yes"], ["--identity=1"], ["--hooks-only", "now"], ["--proxy-settings"], ["--hooks-manual=1"]]) assert.equal(await quiet(bad), 1, bad.join(" "));
   for (const flag of ["--identity", "--hooks-only", "--hooks-manual", "--no-proxy-settings"]) {
     assert.equal(await silently([KEY, "--client", "kiro", flag]), 1, `${flag} is refused for another client`);
   }
-  assert.deepEqual([s.config().content.prompts, s.config().identity.email], [false, false]);
+  assert.deepEqual(choices(), [false, false, false]);
+
+  // A first install from the command line with no flag has both on; each --no- flag turns one off.
+  for (const [flags, expected] of [[[], [true, true, true]], [["--no-enrich"], [false, false, true]], [["--no-identity"], [true, true, false]]] as const) {
+    const fresh = sandbox(t);
+    const write = process.stdout.write.bind(process.stdout);
+    (process.stdout as { write: unknown }).write = () => true;
+    try {
+      assert.equal(await run([KEY, "--client", "cursor", "--endpoint", INGEST, "--no-test", ...flags], { cursor: fresh.host, fetchImpl: ingest().fetchImpl }), 0);
+    } finally {
+      process.stdout.write = write;
+    }
+    assert.deepEqual([fresh.config().content.prompts, fresh.config().content.toolDetails, fresh.config().identity.email], expected, flags.join(" ") || "no flag");
+  }
 });
 
 test("without a service, turning capture off removes what the old setting had left in refused batches", async t => {
@@ -577,7 +611,7 @@ test("disable stops spooling and the service, enable brings both back, and each 
   s.writeHooks(FOREIGN_HOOKS);
   const result = await s.install();
   assert.equal(result.steps.find(step => step.name === "merge_hooks")!.detail,
-    `Added the six CodeTelemetry hook entries to ${s.paths.hooksFile}; your other hooks are kept (copy of your file: ${s.paths.hooksBackup})`);
+    `Added the eight CodeTelemetry hook entries to ${s.paths.hooksFile}; your other hooks are kept (copy of your file: ${s.paths.hooksBackup})`);
   assert.equal(fs.readFileSync(s.paths.hooksBackup, "utf8"), FOREIGN_HOOKS);
   assert.equal(s.config().createdByConnect, false);
   assert.deepEqual(s.hooks().stop, [{ command: "/opt/acme/notify-done.sh" }, { command: s.paths.hook, timeout: 5 }]);
@@ -603,7 +637,7 @@ test("disable stops spooling and the service, enable brings both back, and each 
   s.calls.length = 0;
   const enabled = await s.command(["enable"]);
   assert.equal(enabled.code, 0);
-  assert.equal(enabled.text, "Cursor collection enabled. Capture: metadata only. Developer email: not sent.");
+  assert.equal(enabled.text, `Cursor collection enabled. ${MODE_ON}`);
   assert.equal(s.config().enabled, true);
   assert.deepEqual(s.hooks().stop, [{ command: "/opt/acme/notify-done.sh" }, { command: s.paths.hook, timeout: 5 }]);
   assert.deepEqual(s.calls, ["systemctl --user show-environment", "systemctl --user daemon-reload",
@@ -638,7 +672,7 @@ test("a hooks.json with an empty list survives login, a second login, disable, e
   assert.deepEqual(s.hooks().postToolUse, [{ command: s.paths.hook, timeout: 5 }]);
   const installed = fs.readFileSync(s.paths.hooksFile, "utf8"), stat = fs.statSync(s.paths.hooksFile);
   const again = await s.install();
-  assert.equal(again.steps.find(step => step.name === "merge_hooks")!.detail, `${s.paths.hooksFile} already holds the six CodeTelemetry hook entries`);
+  assert.equal(again.steps.find(step => step.name === "merge_hooks")!.detail, `${s.paths.hooksFile} already holds the eight CodeTelemetry hook entries`);
   assert.equal(fs.readFileSync(s.paths.hooksFile, "utf8"), installed);
   assert.deepEqual([fs.statSync(s.paths.hooksFile).ino, fs.statSync(s.paths.hooksFile).mtimeMs], [stat.ino, stat.mtimeMs], "the second login does not write the file");
   assert.deepEqual(s.config().createdHookKeys, created);
@@ -679,7 +713,7 @@ test("uninstall prints every path it leaves, and --purge leaves none while a for
   assert.equal(removed.code, 0);
   assert.equal(removed.lines[0], "Cursor collection uninstalled: the hook entries, the hook program, the launchers and the service are removed.");
   assert.deepEqual(s.calls, [`systemctl --user disable --now ${CURSOR_SERVICE.linuxName}`, "systemctl --user daemon-reload"]);
-  for (const gone of [s.paths.hook, s.paths.hookProgram, s.paths.collectorLauncher, s.unit]) assert.ok(!fs.existsSync(gone), gone);
+  for (const gone of [s.paths.hook, s.paths.readHook, s.paths.hookProgram, s.paths.collectorLauncher, s.unit]) assert.ok(!fs.existsSync(gone), gone);
   assert.equal(fs.readFileSync(s.paths.hooksFile, "utf8"), FOREIGN_HOOKS, "only our entries were removed");
   assert.equal(s.config().enabled, false);
 
@@ -690,9 +724,10 @@ test("uninstall prints every path it leaves, and --purge leaves none while a for
   const left = new Map(listed.map(match => [match[1]!, match[2]!]));
   assert.equal(left.get(s.paths.config), "settings; holds the ingest key in plain text");
   assert.equal(left.get(`${s.paths.config}.previous`), "previous settings; holds an ingest key in plain text");
-  assert.match(left.get(state.spool)!, /records waiting to be sent; holds prompt text and commands if --enrich was ever on/);
-  assert.match(left.get(state.pending)!, /holds prompt text and commands/);
-  assert.match(left.get(state.rejected)!, /holds prompt text and commands/);
+  assert.match(left.get(state.spool)!, /records waiting to be sent; holds prompt and reply text, commands, tool output and file content unless capture was always off \(--no-enrich\)/);
+  assert.match(left.get(state.pending)!, /holds prompt and reply text, commands, tool output and file content/);
+  assert.match(left.get(state.rejected)!, /holds prompt and reply text, commands, tool output and file content/);
+  assert.match(left.get(state.checkpoint)!, /reasoning and file content that wait for their record; holds prompt and reply text/);
   for (const expected of [state.checkpoint, state.health, s.paths.stateDir, s.paths.shareDir, s.paths.hooksBackup, path.join(s.paths.stateDir, "stray.txt")]) assert.ok(left.has(expected), expected);
   assert.ok([...left.keys()].some(file => /\/runtime-[a-f0-9]{16}$/.test(file)), "the runtime copy is named");
   // Every file still on the machine is one of the listed paths, or inside a listed directory.
@@ -839,7 +874,7 @@ test("status reports the collector, the hooks, delivery and what needs attention
   const quiet = JSON.parse((await s.command(["status"], { json: true }, at)).text);
   assert.deepEqual([quiet.installed, quiet.running, quiet.enabled, quiet.hooks, quiet.service, quiet.nodePathValid, quiet.delivery, quiet.proxy],
     [true, false, true, "installed", "installed", true, null, null]);
-  assert.deepEqual([quiet.capture, quiet.identity, quiet.mode], [{ prompts: false, toolDetails: false }, { email: false }, "Capture: metadata only. Developer email: not sent."]);
+  assert.deepEqual([quiet.capture, quiet.identity, quiet.mode], [{ prompts: true, toolDetails: true }, { email: true }, MODE_ON]);
   assert.match(quiet.notices[0], /^The collector is not running\. Records wait in the spool \(at most 128 MiB\) for up to 14 days/);
   assert.deepEqual([quiet.lastTickAt, quiet.lastOutcome, quiet.lastAckAt, quiet.recordsSpooled, quiet.hookDrops, quiet.pid], [0, null, null, 0, 0, 0]);
 
@@ -856,7 +891,15 @@ test("status reports the collector, the hooks, delivery and what needs attention
   const human = (await s.command(["status"], {}, at)).lines;
   assert.equal(human[0], `Cursor collection: enabled; collector running (pid ${process.pid}); service installed`);
   assert.equal(human[1], `Hooks: installed (${s.paths.hooksFile})`);
-  assert.equal(human[2], "Capture: metadata only. Developer email: not sent.");
+  assert.equal(human[2], MODE_ON);
+  {
+    // An installation with both options off: status says so and names the flags that turn them on.
+    const off = sandbox(t);
+    await off.install({ settings: { enrich: false }, cursor: { identity: false } });
+    const json = JSON.parse((await off.command(["status"], { json: true }, at)).text);
+    assert.deepEqual([json.capture, json.identity, json.mode], [{ prompts: false, toolDetails: false }, { email: false }, MODE_OFF]);
+    assert.equal((await off.command(["status"], {}, at)).lines[2], MODE_OFF);
+  }
   assert.equal(human[3], "Last pass 3s ago; last accepted delivery 20s ago; last answer: accepted");
   assert.match(human[4]!, /^Records: 12 read, 9 sent, 3 being sent; /);
 
@@ -892,7 +935,7 @@ test("status reports the collector, the hooks, delivery and what needs attention
   fs.writeFileSync(s.paths.hooksFile, JSON.stringify(document));
   const partial = (await cursorStatus(s.paths.config, { ...s.host, ...at }))!;
   assert.equal(partial.hooks, "partial");
-  assert.match(partial.notices.join("\n"), /holds only some of the six CodeTelemetry hook entries[^]*cursor enable` adds them back/);
+  assert.match(partial.notices.join("\n"), /holds only some of the eight CodeTelemetry hook entries[^]*cursor enable` adds them back/);
 
   // The hook found the recorded Node.js gone: status says so, and so does every other command, on stderr.
   assert.equal(cursorNodeNotice(s.home), null);
@@ -926,7 +969,7 @@ test("status reports the collector, the hooks, delivery and what needs attention
 
 test("collect sends spooled records with the format header and the Connect version, and stops when its settings change", async t => {
   const s = sandbox(t);
-  await s.install({ cursor: { hooksOnly: true } });
+  await s.install({ settings: { enrich: false }, cursor: { hooksOnly: true, identity: false } });
   const stateDir = s.config().stateDir, state = cursorStateFiles(stateDir);
   const now = 1_900_000_000_000, captured = now - 60_000;
   const line = (id: string, hook: string, payload: Record<string, unknown>) => JSON.stringify({
@@ -1042,7 +1085,9 @@ test("the client twins, the descriptor, the help text and the versions agree", a
   assert.ok(descriptor.resolveConfigPath({}).startsWith(os.homedir()), "inside the isolated home");
   const printed = JSON.parse(CLIENTS.cursor.printConfig(INGEST, true));
   assert.deepEqual([printed.kind, printed.key, printed.ingestEndpoint, printed.content, printed.identity],
-    ["codetelemetry-cursor-hooks-v1", "cot_<YOUR_INGEST_KEY>", INGEST, { prompts: true, toolDetails: true }, { email: false }]);
+    ["codetelemetry-cursor-hooks-v1", "cot_<YOUR_INGEST_KEY>", INGEST, { prompts: true, toolDetails: true }, { email: true }]);
+  const reduced = JSON.parse(CLIENTS.cursor.printConfig(INGEST, false, false));
+  assert.deepEqual([reduced.content, reduced.identity], [{ prompts: false, toolDetails: false }, { email: false }]);
   assert.equal(descriptor.readKey(path.join(os.tmpdir(), "no-such-cursor-config.json")), null);
   assert.deepEqual(descriptor.readSummary(path.join(os.tmpdir(), "no-such-cursor-config.json")), { exists: false, otelKeys: [], hasKey: false, collectorEnabled: false });
 
@@ -1071,13 +1116,32 @@ test("the client twins, the descriptor, the help text and the versions agree", a
     process.stdout.write = write;
   }
   const output = lines.join("");
+  // print-config shows what a new install stores: both on, or off for each --no- flag.
+  const block = (text: string) => JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
+  const shown = block(output.slice(output.indexOf('{\n  "kind"')).split("\n\nCursor is set up")[0]!);
+  assert.deepEqual([shown.content, shown.identity], [{ prompts: true, toolDetails: true }, { email: true }]);
+  lines.length = 0;
+  (process.stdout as { write: unknown }).write = (chunk: string | Uint8Array) => { lines.push(String(chunk)); return true; };
+  try {
+    assert.equal(await run(["print-config", "--client", "cursor", "--endpoint", INGEST, "--no-enrich", "--no-identity"]), 0);
+  } finally {
+    process.stdout.write = write;
+  }
+  const turnedOff = block(lines.join("").split("\n\nCursor is set up")[0]!);
+  assert.deepEqual([turnedOff.content, turnedOff.identity], [{ prompts: false, toolDetails: false }, { email: false }]);
   assert.match(output, /cursor status\|collect\|enable\|disable\|uninstall\|retry-rejected/);
   assert.match(output, /--client claude\|codex\|pi\|kiro\|cursor/);
   assert.match(output, /Verified on Linux\. macOS\s+is in preview\. Windows is not supported\./);
-  assert.match(output, /By default only metadata is collected/);
-  assert.match(output, /Headless runs \(cursor-agent -p\) report tools and durations,\s+but no prompts and no tokens\./);
+  assert.match(output, /A new install sends prompt text, the reply and the model's reasoning for\s+each turn, tool commands, tool output, the error text of a failed call,\s+file paths, the content of files read and written, the workspace path[^]*and your Cursor account email/);
+  assert.match(output, /--no-enrich \/ --enrich Stop sending prompt text, reply text, reasoning, tool\s+commands, tool output, error text, file paths, file\s+content and the workspace path, or send them again\./);
+  assert.match(output, /After upgrading Connect, run `login --client cursor` again/);
+  // print-config says what each capture option sends.
+  assert.match(output, /content\.prompts sends prompt text, the reply of each turn and the model's reasoning\. content\.toolDetails sends tool commands, tool output, the error text of a failed call, file paths, the content of files read and written, and the workspace path\. identity\.email sends your Cursor account email\./);
+  assert.match(output, /It installs eight hooks and a background collector/);
+  assert.match(output, /On by\s+default for a new install; with neither flag an\s+existing install keeps its stored choice\./);
+  assert.match(output, /Headless runs\s+\(cursor-agent -p\) report tools, their output and durations, but no prompts,\s+no replies and no tokens\./);
   assert.match(output, /Remote-SSH, WSL or a\s+Dev Container/);
-  for (const flag of ["--enrich / --no-enrich", "--identity / --no-identity", "--hooks-only", "--hooks-manual", "--no-proxy-settings", "cursor uninstall --purge"]) assert.ok(output.includes(flag), flag);
+  for (const flag of ["--no-enrich / --enrich", "--no-identity / --identity", "--hooks-only", "--hooks-manual", "--no-proxy-settings", "cursor uninstall --purge"]) assert.ok(output.includes(flag), flag);
   assert.match(output, /"kind": "codetelemetry-cursor-hooks-v1"/);
   assert.match(output, /Cursor is set up by running `npx -y @codetelemetry\/connect login --client cursor`/);
   assert.match(output, /--client must be one of claude, codex, pi, kiro, cursor\./);
@@ -1103,7 +1167,7 @@ test("the MCP tools list cursor, refuse to install it, and tell the model which 
     ["onboard", { client: "cursor", path: "/etc/passwd" }]] as const) {
     const result = await callTool(name, args, ctx);
     assert.deepEqual([result.ok, result.error], [false, "use_connect_cli"], name);
-    assert.match(String(result.message), /Ask the user to run `npx -y @codetelemetry\/connect login --client cursor`[^]*where the Cursor workspace lives[^]*metadata only unless[^]*--enrich[^]*--identity/);
+    assert.match(String(result.message), /Ask the user to run `npx -y @codetelemetry\/connect login --client cursor`[^]*where the Cursor workspace lives[^]*adds eight hook entries[^]*A new install sends prompt text, the reply and reasoning of each turn, tool commands, tool output, file paths, the content of files read and written, the workspace path and the user's Cursor account email[^]*--no-enrich[^]*--no-identity[^]*keeps its stored choices/);
   }
   assert.equal(session.hasKey(), false, "a key passed with the refused call is not kept");
   assert.deepEqual(tree(s.home), [], "nothing was installed or written");
@@ -1140,4 +1204,37 @@ test("the real Connect runtime fits the bounds of the copy the service runs from
 
 test("no test in this file reached a real service manager", () => {
   assert.equal(fs.existsSync(guardLog), false, fs.existsSync(guardLog) ? fs.readFileSync(guardLog, "utf8") : "");
+});
+
+test("an installation made with six hooks is brought to eight by enable or the next login, with the user's hooks kept", async t => {
+  const s = sandbox(t);
+  s.writeHooks(FOREIGN_HOOKS);
+  await s.install();
+  // The machine as the earlier release left it: six entries, no launcher for the file-read hook.
+  const earlier = CURSOR_HOOK_EVENTS.slice(0, 6), foreign = JSON.parse(FOREIGN_HOOKS).hooks as Record<string, unknown[]>;
+  const document = JSON.parse(fs.readFileSync(s.paths.hooksFile, "utf8"));
+  for (const event of ["afterAgentResponse", "beforeReadFile"]) {
+    if (event in foreign) document.hooks[event] = foreign[event];
+    else delete document.hooks[event];
+  }
+  fs.writeFileSync(s.paths.hooksFile, JSON.stringify(document, null, 2) + "\n");
+  fs.rmSync(s.paths.readHook);
+  updateCursorConfig(s.paths.config, { createdHookKeys: earlier.filter(event => !(event in foreign)) });
+
+  const before = (await cursorStatus(s.paths.config, s.host))!;
+  assert.equal(before.hooks, "partial");
+  assert.match(before.notices.join("\n"), /holds only some of the eight CodeTelemetry hook entries, so Cursor reports only part of each session\. An earlier Connect release installed six of them[^]*cursor enable` adds them back/);
+
+  const enabled = await s.command(["enable"]);
+  assert.equal(enabled.code, 0);
+  assert.equal((await cursorStatus(s.paths.config, s.host))!.hooks, "installed");
+  assert.ok(fs.existsSync(s.paths.readHook));
+  assert.deepEqual(s.hooks().beforeReadFile!.at(-1), { command: s.paths.readHook, timeout: 5 });
+  assert.deepEqual(s.hooks().afterAgentResponse!.at(-1), { command: s.paths.hook, timeout: 5 });
+  for (const [event, entries] of Object.entries(foreign)) assert.deepEqual(s.hooks()[event]!.slice(0, entries.length), entries, `the user's ${event} hooks are kept`);
+  assert.deepEqual(s.config().createdHookKeys, CURSOR_HOOK_EVENTS.filter(event => !(event in foreign)));
+
+  // Uninstall then gives the user's file back, byte for byte.
+  assert.equal((await s.command(["uninstall"])).code, 0);
+  assert.equal(fs.readFileSync(s.paths.hooksFile, "utf8"), JSON.stringify(JSON.parse(FOREIGN_HOOKS), null, 2) + "\n");
 });

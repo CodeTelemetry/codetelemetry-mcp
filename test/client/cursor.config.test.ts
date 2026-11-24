@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import {
+import { cursorHookCommand,
   CURSOR_CONFIG_BYTES, cursorCaptureSummary, cursorNetworkFromEnv, cursorNodePaths, cursorPaths, cursorPolicy, cursorProxyDisplay,
   cursorShareFiles, cursorStateFiles, isSafeCursorPath, readCursorConfig, readCursorKey, readCursorSummary, resolveCursorConfigPath,
   updateCursorConfig, writeCursorConfig, writeCursorFileAtomic, type CursorConfig,
@@ -16,6 +16,9 @@ import {
 const KEY = "cot_" + "synthetic".repeat(4);
 const INGEST = "https://ingest.example.invalid";
 const NODE = { execPath: "/opt/fixture/node-v24/bin/node", commandPath: "/opt/fixture/bin/node" };
+/** The mode line with both options on, and with both off. */
+const MODE_ON = "Capture: prompt text, reply text and reasoning, tool commands, tool output, file paths, file content and workspace path (turn off: login --client cursor --no-enrich). Developer email: sent (turn off: login --client cursor --no-identity).";
+const MODE_OFF = "Capture: metadata only (turn on prompt and reply text and tool details: login --client cursor --enrich). Developer email: not sent (turn on: login --client cursor --identity).";
 
 function sandbox(t: TestContext) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "cursor-config-"));
@@ -35,10 +38,16 @@ test("every default path derives from the home directory and none is inside Curs
     hooksFile: path.join(s.home, ".cursor/hooks.json"),
     hooksBackup: path.join(s.home, ".cursor/hooks.json.codetelemetry-backup"),
     hook: path.join(s.home, ".local/share/codetelemetry/cursor-hooks-v1/hook.sh"),
+    readHook: path.join(s.home, ".local/share/codetelemetry/cursor-hooks-v1/hook-read.sh"),
     hookProgram: path.join(s.home, ".local/share/codetelemetry/cursor-hooks-v1/hook.cjs"),
     collectorLauncher: path.join(s.home, ".local/share/codetelemetry/cursor-hooks-v1/collector.sh"),
   });
-  assert.deepEqual(cursorShareFiles("/x"), { hook: "/x/hook.sh", hookProgram: "/x/hook.cjs", collectorLauncher: "/x/collector.sh" });
+  assert.deepEqual(cursorShareFiles("/x"), { hook: "/x/hook.sh", readHook: "/x/hook-read.sh", hookProgram: "/x/hook.cjs", collectorLauncher: "/x/collector.sh" });
+  // The command of a file read is the launcher beside the ordinary one; every other event runs the ordinary one.
+  assert.equal(cursorHookCommand("beforeReadFile", "/x/hook.sh"), "/x/hook-read.sh");
+  for (const event of ["beforeSubmitPrompt", "postToolUse", "postToolUseFailure", "stop", "afterAgentThought", "afterShellExecution", "afterAgentResponse"]) {
+    assert.equal(cursorHookCommand(event, "/x/hook.sh"), "/x/hook.sh", event);
+  }
   assert.deepEqual(cursorStateFiles("/s"), { spool: "/s/spool", dropped: "/s/dropped", nodePath: "/s/node-path", nodeStale: "/s/node-stale",
     checkpoint: "/s/checkpoint.json", pending: "/s/pending.json", health: "/s/health.json", lock: "/s/collector.lock", rejected: "/s/rejected" });
   assert.ok(cursorPaths().config.startsWith(os.homedir() + path.sep), "the default home is the isolated test home");
@@ -59,7 +68,7 @@ test("the safe-path grammar admits only characters no shell splits or expands", 
   }
 });
 
-test("a first install is metadata-only without the email, private on disk, and reports no secret", t => {
+test("a first install captures prompts, tool details and the email, is private on disk, and reports no secret", t => {
   const s = sandbox(t);
   const result = s.write();
   assert.deepEqual(result, {
@@ -70,7 +79,7 @@ test("a first install is metadata-only without the email, private on disk, and r
   assert.ok(!JSON.stringify(result).includes(KEY));
   const expected: CursorConfig = {
     kind: "codetelemetry-cursor-hooks-v1", version: 1, enabled: true, key: KEY, ingestEndpoint: INGEST, stateDir: s.paths.stateDir,
-    content: { prompts: false, toolDetails: false }, identity: { email: false }, network: {}, node: NODE, hooksFile: s.paths.hooksFile, createdByConnect: false,
+    content: { prompts: true, toolDetails: true }, identity: { email: true }, network: {}, node: NODE, hooksFile: s.paths.hooksFile, createdByConnect: false,
   };
   assert.deepEqual(s.read(), expected);
   assert.equal(fs.readFileSync(s.paths.config, "utf8"), JSON.stringify(expected, null, 2) + "\n");
@@ -84,26 +93,58 @@ test("a first install is metadata-only without the email, private on disk, and r
 test("capture options are tri-state: a flag sets, its negation clears, no flag keeps", t => {
   const s = sandbox(t);
   const state = () => cursorPolicy(s.read());
-  assert.deepEqual(s.write({ enrich: true }).reduced, { prompts: false, toolDetails: false, email: false });
-  assert.deepEqual(state(), { prompts: true, toolDetails: true, email: false });
   assert.deepEqual(s.write().reduced, { prompts: false, toolDetails: false, email: false });
-  assert.deepEqual(state(), { prompts: true, toolDetails: true, email: false }, "a rerun without the flag keeps capturing, and says so");
-  assert.deepEqual(s.write({ identity: true }).reduced, { prompts: false, toolDetails: false, email: false });
-  assert.deepEqual(state(), { prompts: true, toolDetails: true, email: true });
+  assert.deepEqual(state(), { prompts: true, toolDetails: true, email: true }, "a new install has both options on");
+  assert.deepEqual(s.write().reduced, { prompts: false, toolDetails: false, email: false });
+  assert.deepEqual(state(), { prompts: true, toolDetails: true, email: true }, "a rerun without a flag keeps the stored choice");
   assert.deepEqual(s.write({ enrich: false }).reduced, { prompts: true, toolDetails: true, email: false }, "a downgrade is reported so unsent records can be reduced");
   assert.deepEqual(state(), { prompts: false, toolDetails: false, email: true });
-  assert.deepEqual(s.write({ enrich: false, identity: false }).reduced, { prompts: false, toolDetails: false, email: true });
+  assert.deepEqual(s.write({ identity: false }).reduced, { prompts: false, toolDetails: false, email: true });
   assert.deepEqual(state(), { prompts: false, toolDetails: false, email: false });
-  assert.deepEqual(s.write({ enrich: true, identity: true }).reduced, { prompts: false, toolDetails: false, email: false });
+  assert.deepEqual(s.write().reduced, { prompts: false, toolDetails: false, email: false });
+  assert.deepEqual(state(), { prompts: false, toolDetails: false, email: false }, "a stored off stays off without a flag");
+  assert.deepEqual(s.write({ enrich: true }).reduced, { prompts: false, toolDetails: false, email: false });
+  assert.deepEqual(state(), { prompts: true, toolDetails: true, email: false });
+  assert.deepEqual(s.write({ identity: true }).reduced, { prompts: false, toolDetails: false, email: false });
   assert.deepEqual(state(), { prompts: true, toolDetails: true, email: true });
 });
 
-test("the mode line names exactly what is captured", () => {
+test("a new install with one option turned off stores exactly that", t => {
+  for (const [options, expected] of [
+    [{ enrich: false }, { prompts: false, toolDetails: false, email: true }],
+    [{ identity: false }, { prompts: true, toolDetails: true, email: false }],
+    [{ enrich: false, identity: false }, { prompts: false, toolDetails: false, email: false }],
+    [{ enrich: true, identity: true }, { prompts: true, toolDetails: true, email: true }],
+  ] as const) {
+    const s = sandbox(t);
+    assert.deepEqual(s.write(options).reduced, { prompts: false, toolDetails: false, email: false });
+    assert.deepEqual(cursorPolicy(s.read()), expected, JSON.stringify(options));
+  }
+});
+
+test("a config stored before the options were on by default keeps its choices until a flag changes them", t => {
+  const s = sandbox(t);
+  s.write();
+  const stored = { ...JSON.parse(fs.readFileSync(s.paths.config, "utf8")), content: { prompts: false, toolDetails: false }, identity: { email: false } };
+  fs.writeFileSync(s.paths.config, JSON.stringify(stored, null, 2) + "\n", { mode: 0o600 });
+  s.write();
+  assert.deepEqual(cursorPolicy(s.read()), { prompts: false, toolDetails: false, email: false });
+  assert.equal(cursorCaptureSummary(s.read()), MODE_OFF, "the mode line names the flags that turn each on");
+  s.write({ enrich: true });
+  assert.deepEqual(cursorPolicy(s.read()), { prompts: true, toolDetails: true, email: false });
+  s.write({ identity: true });
+  assert.deepEqual(cursorPolicy(s.read()), { prompts: true, toolDetails: true, email: true });
+  assert.equal(cursorCaptureSummary(s.read()), MODE_ON);
+});
+
+test("the mode line names exactly what is captured and the command that changes it", () => {
   const line = (prompts: boolean, toolDetails: boolean, email: boolean) => cursorCaptureSummary({ content: { prompts, toolDetails }, identity: { email } });
-  assert.equal(line(false, false, false), "Capture: metadata only. Developer email: not sent.");
-  assert.equal(line(true, true, true), "Capture: prompt text, tool commands, file paths and workspace path (--enrich). Developer email: sent (--identity).");
-  assert.equal(line(true, false, false), "Capture: prompt text. Developer email: not sent.");
-  assert.equal(line(false, true, true), "Capture: tool commands, file paths and workspace path. Developer email: sent (--identity).");
+  assert.equal(line(false, false, false), MODE_OFF);
+  assert.equal(line(true, true, true), MODE_ON);
+  assert.equal(line(true, true, false), "Capture: prompt text, reply text and reasoning, tool commands, tool output, file paths, file content and workspace path (turn off: login --client cursor --no-enrich). Developer email: not sent (turn on: login --client cursor --identity).");
+  assert.equal(line(false, false, true), "Capture: metadata only (turn on prompt and reply text and tool details: login --client cursor --enrich). Developer email: sent (turn off: login --client cursor --no-identity).");
+  assert.equal(line(true, false, false), "Capture: prompt text, reply text and reasoning (turn off: login --client cursor --no-enrich). Developer email: not sent (turn on: login --client cursor --identity).");
+  assert.equal(line(false, true, true), "Capture: tool commands, tool output, file paths, file content and workspace path (turn off: login --client cursor --no-enrich). Developer email: sent (turn off: login --client cursor --no-identity).");
 });
 
 test("a rerun keeps the stored network settings, new values replace them, and they can be cleared", t => {

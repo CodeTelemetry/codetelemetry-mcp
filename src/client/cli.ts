@@ -15,13 +15,14 @@ import { importWorkspaceHistory } from "./workspaceImport.ts";
 import { bootstrapWorkspace, type BootstrapOptions } from "./bootstrap.ts";
 import { listWorkspaces, loadWorkspace, bindWorkspace, bindingOf, findWorkspaceBinding, sameWorkspace, writeCodexWorkspaceProfile } from "./workspaces.ts";
 import { runKiroCommand } from "./kiro/command.ts";
+import type { KiroServiceOptions } from "./kiro/service.ts";
 import { PUBLIC_SESSIONS_HELP, runPublicSessionsCommand } from "./publicSessionsCommand.ts";
 import { cursorNodeNotice, runCursorCommand, type CursorCommandHost } from "./cursor/command.ts";
 import { CursorPreflightRefusal, cursorPreflight } from "./cursor/preflight.ts";
 import { spawn } from "node:child_process";
 import { onboard, type OnboardClient } from "./onboard.ts";
 import { resolveEndpoints, type SettingsScope } from "./config.ts";
-import { CLIENTS, CURSOR_SETUP_HINT, PI_EXTENSION_HINT } from "./clients.ts";
+import { CLIENTS, CURSOR_CAPTURE_HINT, CURSOR_SETUP_HINT, PI_EXTENSION_HINT } from "./clients.ts";
 import { ONBOARD_CLIENTS, isOnboardClient } from "./assistants.ts";
 import { looksLikeKey, mask } from "./keys.ts";
 import { runImport, runEstimate, type ImportRunResult } from "./import/run.ts";
@@ -51,7 +52,7 @@ import {
 
 /** The @codetelemetry/connect release this source is published as. Keep it in
  *  step with packages/connect/package.json; a test fails when they differ. */
-export const CONNECT_VERSION = "0.5.0";
+export const CONNECT_VERSION = "0.6.0";
 
 type Parsed = { _: string[]; flags: Record<string, string | boolean> };
 
@@ -138,6 +139,9 @@ Options:
   --api-base <url>       Onboarding API base (default: https://codetelemetry.com)
   --endpoint <url>       OTLP ingest endpoint (default: https://ingest.codetelemetry.com)
   --enrich               Also enable prompt/body/tool-content flags (richer dashboards)
+                         With --client kiro: --no-enrich turns capture off again
+                         for new records; with neither flag the stored choice
+                         is kept. Credential scrubbing is best effort.
   --no-open              On \`login\`, don't auto-open the browser (just print the URL)
   --no-test              Skip sending the test event
   --no-verify            Skip waiting for the probe to land
@@ -191,8 +195,7 @@ import options:
   ingest.source=history-import. Sessions already captured live, or already
   imported, are skipped; an interrupted import resumes on the next run.
   Imported history has tokens, prompts and tool calls (name, outcome and, as
-  --content allows, input), but no tool output, per-request latency, retries,
-  permission decisions or active time.
+  --content allows, input).
   Imported tokens are billed like live usage: they count toward this month's
   included seat tokens first, then 5¢ per million from prepaid credit. When the
   server reports billing state, an import starts no session the credit cannot
@@ -229,31 +232,38 @@ import options:
   --json                 Emit the full result as JSON
 
 Cursor (--client cursor):
-  \`login --client cursor\` (or \`<cot_key> --client cursor\`) adds six entries to
+  \`login --client cursor\` (or \`<cot_key> --client cursor\`) adds eight entries to
   ~/.cursor/hooks.json (your other hooks are kept), installs a hook program
   and starts a background collector: a systemd user service on Linux, a
   LaunchAgent on macOS. Requires Node.js 24 or newer. Verified on Linux. macOS
   is in preview. Windows is not supported.
   Run it on the machine where the workspace lives: with Remote-SSH, WSL or a
   Dev Container, Cursor runs hooks on that host, not on your laptop.
-  By default only metadata is collected: prompt length, tool names, durations,
-  exit codes, models and token counts. A session then shows no repository and
-  no developer. File contents, command output, model replies and reasoning are
-  never collected. Headless runs (cursor-agent -p) report tools and durations,
-  but no prompts and no tokens.
-  --enrich / --no-enrich Also send prompt text, tool commands, file paths and
-                         the workspace path (which gives a session its
-                         repository), or stop sending them. With neither
-                         flag the current choice is kept. Text that looks
-                         like a credential is scrubbed on a best-effort
+  A new install sends prompt text, the reply and the model's reasoning for
+  each turn, tool commands, tool output, the error text of a failed call,
+  file paths, the content of files read and written, the workspace path
+  (which gives a session its repository) and your Cursor account email
+  (which puts sessions under your name), with prompt length, tool names,
+  durations, exit codes, models and token counts. Headless runs
+  (cursor-agent -p) report tools, their output and durations, but no prompts,
+  no replies and no tokens.
+  After upgrading Connect, run \`login --client cursor\` again: it installs
+  the current hook program and adds the hook entries a newer version uses.
+  --no-enrich / --enrich Stop sending prompt text, reply text, reasoning, tool
+                         commands, tool output, error text, file paths, file
+                         content and the workspace path, or send them again.
+                         On by default for a new install; with neither flag an
+                         existing install keeps its stored choice. Text that
+                         looks like a credential is scrubbed on a best-effort
                          basis; a secret in an unrecognized shape is sent.
-  --identity / --no-identity
-                         Also send your Cursor account email, or stop sending
-                         it. With neither flag the current choice is kept.
+  --no-identity / --identity
+                         Stop sending your Cursor account email, or send it
+                         again. On by default for a new install; with neither
+                         flag an existing install keeps its stored choice.
   --hooks-only           Install no service, for a host without a per-user
                          service manager; run the printed launcher under your
                          own supervisor instead.
-  --hooks-manual         Do not edit hooks.json; print the six entries to
+  --hooks-manual         Do not edit hooks.json; print the eight entries to
                          paste by hand.
   --no-proxy-settings    Forget recorded proxy settings. Otherwise HTTPS_PROXY,
                          NO_PROXY and NODE_EXTRA_CA_CERTS are recorded from
@@ -383,7 +393,8 @@ const ESTIMATE_FLAGS = new Set(["json", "help", "h", "source", "since", "api-bas
 type CursorOptions = { enrich?: boolean; identity?: boolean; hooksOnly: boolean; hooksManual: boolean; clearNetwork: boolean };
 
 /** The Cursor install options. `--enrich` and `--identity` have three states:
- *  on, off (`--no-...`), or absent to keep the stored choice. A string is the
+ *  on, off (`--no-...`), or absent to keep the stored choice (on for a new
+ *  install). A string is the
  *  reason the flags cannot be used. */
 function cursorOptionsFromFlags(flags: Parsed["flags"]): CursorOptions | string {
   for (const name of ["enrich", "identity"]) {
@@ -702,9 +713,10 @@ async function runImportCommand(
   return result.ok ? 0 : 1;
 }
 
-/** What a caller may replace: the machine the Cursor collector is installed on
- *  and the fetch its onboarding uses. Tests pass both; the CLI passes neither. */
-export type RunDeps = { cursor?: CursorCommandHost; fetchImpl?: FetchLike };
+/** What a caller may replace: the machine the Cursor collector is installed on,
+ *  the service manager the Kiro collector is enabled with, and the fetch
+ *  onboarding uses. Tests pass them; the CLI passes none. */
+export type RunDeps = { cursor?: CursorCommandHost; kiro?: KiroServiceOptions; fetchImpl?: FetchLike };
 
 export async function run(argv: string[], deps: RunDeps = {}): Promise<number> {
   if(argv[0]==="run") {
@@ -835,15 +847,22 @@ export async function run(argv: string[], deps: RunDeps = {}): Promise<number> {
     out(cursorOptions);
     return 1;
   }
+  // Kiro and Cursor keep their stored capture choice when neither --enrich nor
+  // --no-enrich is given; --no-enrich turns capture off.
+  const keepsCapture = client === "kiro" && onboarding;
+  if (keepsCapture && hasFlag(flags, "enrich") && typeof flags.enrich !== "boolean") {
+    out("--enrich takes no value; use --enrich or --no-enrich.");
+    return 1;
+  }
   const common = {
     client,
     endpoints,
-    // Cursor keeps its stored capture choice when neither --enrich nor --no-enrich is given.
-    settings: { ...settingsOpts, enrich: cursorOptions ? cursorOptions.enrich : !!flags.enrich },
+    settings: { ...settingsOpts, enrich: cursorOptions ? cursorOptions.enrich : keepsCapture ? flags.enrich as boolean | undefined : !!flags.enrich },
     sendTest: flags.test !== false,
     verify: flags.verify !== false,
     logger: flags.json ? undefined : out,
     ...(cursorOptions ? { cursor: { ...cursorOptions, host: deps.cursor } } : {}),
+    ...(keepsCapture && deps.kiro ? { kiroService: deps.kiro } : {}),
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
   };
   const expectedScope = expectedScopeFromFlags(flags);
@@ -854,9 +873,12 @@ export async function run(argv: string[], deps: RunDeps = {}): Promise<number> {
 
   // print-config: no key, no network.
   if (cmd === "print-config") {
-    out(CLIENTS[client].printConfig(resolveEndpoints(endpoints).ingestEndpoint, !!flags.enrich));
+    // Cursor prints what a new install stores: both options on unless turned off.
+    out(client === "cursor"
+      ? CLIENTS.cursor.printConfig(resolveEndpoints(endpoints).ingestEndpoint, flags.enrich !== false, flags.identity !== false)
+      : CLIENTS[client].printConfig(resolveEndpoints(endpoints).ingestEndpoint, !!flags.enrich));
     if (client === "pi") out(`\n${PI_EXTENSION_HINT}`);
-    if (client === "cursor") out(`\n${CURSOR_SETUP_HINT}`);
+    if (client === "cursor") out(`\n${CURSOR_SETUP_HINT}\n${CURSOR_CAPTURE_HINT}`);
     return 0;
   }
 

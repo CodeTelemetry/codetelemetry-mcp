@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { looksLikeKey } from "../keys.ts";
-import { CREDENTIAL_RE, holdsCredential, scrubCredentials } from "../collector/scrub.ts";
+import { CREDENTIAL_RE, holdsCredentialStrict, passesSecretArgument, scrubCredentialsStrict } from "../collector/scrub.ts";
 import type { ContentPolicy, ImportLog } from "../import/model.ts";
 
 export const KIRO_LIMITS = Object.freeze({
@@ -64,17 +64,21 @@ function allowedToolArgs(name:string,value:unknown):Record<string,unknown>|null 
 }
 
 /** Check raw scalar values before JSON encoding. Withhold an entire argument
- * object when secret removal or truncation would change it. */
+ * object when secret removal or truncation would change it, and a shell
+ * command that passes a secret as an argument, whose value has no shape to
+ * recognise. The same check runs again on inputs an earlier version stored. */
 function privateInput(name:string,value:unknown):string|undefined {
  const args=allowedToolArgs(name,value);if(!args) return undefined;
  const encoded=JSON.stringify(args);if(encoded.length>KIRO_LIMITS.toolInputChars) return undefined;
- if(Object.values(args).some(item=>typeof item==="string" && holdsCredential(item))) return undefined;
+ if(Object.values(args).some(item=>typeof item==="string" && holdsCredentialStrict(item))) return undefined;
+ if(name==="execute_bash" && passesSecretArgument(args.command as string)) return undefined;
  return encoded;
 }
 
 /** Capture source data only. The private ingest service interprets it. Recent
  * sanitized calls are transport context, never joined or classified here.
- * Existing replay digests and checkpoint offsets remain upgrade-compatible. */
+ * Existing replay digests and checkpoint offsets remain upgrade-compatible:
+ * the digest is taken from the source record before any scrubbing. */
 export function applyKiroRecord(state: KiroRecordState, line: Uint8Array, sessionId: string, policy: ContentPolicy,
   counters: KiroRecordCounters): ImportLog[] {
   if (line.byteLength > KIRO_LIMITS.recordBytes || !sourceId(sessionId)) {counters.malformed++; return [];}
@@ -98,7 +102,7 @@ export function applyKiroRecord(state: KiroRecordState, line: Uint8Array, sessio
   if (kind === "user") {
     if (typeof payload.content === "string") {
       source.contentLength = payload.content.length;
-      if (policy.prompts) source.content = scrubCredentials(payload.content, KIRO_LIMITS.promptChars);
+      if (policy.prompts) source.content = scrubCredentialsStrict(payload.content, KIRO_LIMITS.promptChars);
     }
   } else if (kind === "tool_call") {
     const callId = sourceId(payload.toolCallId), name = sourceId(payload.toolName);

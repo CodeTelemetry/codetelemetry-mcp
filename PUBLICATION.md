@@ -37,6 +37,13 @@ collector that loses it keeps its records and retries. The collector is installe
 by the Connect command only; the MCP tools return that command instead of
 installing hooks or a service on the user's behalf.
 
+Cursor content (reply and reasoning text, tool output, failure text, file
+content) travels in the same format as optional keys and one more uploaded hook,
+`afterAgentResponse`, with a record bound of 65,536 bytes. A service without that
+support accepts such an envelope and stores what it stored before: it skips the
+reply records and ignores the new keys. Deploy the support first for the content
+to be kept.
+
 ## Release preparation
 
 1. Update MCP `package.json` and `src/version.ts` together, and the standalone

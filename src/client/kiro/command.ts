@@ -41,13 +41,14 @@ export async function runKiroCommand(args: string[], flags: Flags, out: (line: s
   const binding = digest([config.key, config.ingestEndpoint]);
   const fingerprint = digest(config);
   const collector = new KiroCollector({sourceRoot:config.sourceRoot,stateDir:config.stateDir,destinationHash:binding,
-    policy:config.content,bootstrap:config.backfill ? "start" : "end",post:kiroTransport({endpoint:config.ingestEndpoint,key:config.key})});
+    policy:config.content,supersededPolicy:config.supersededContent,bootstrap:config.backfill ? "start" : "end",post:kiroTransport({endpoint:config.ingestEndpoint,key:config.key})});
   const abort = new AbortController();
   const stop = () => abort.abort();
   process.on("SIGINT", stop); process.on("SIGTERM", stop);
   let exit = 0, opened = false;
   try {
     await collector.open(); opened = true;
+    if (collector.discardedSuperseded && !flags.once) out("Kiro capture setting changed; an unsent upload prepared under the earlier setting was discarded and its records will be read again.");
     do {
       const current = readKiroConfig(file);
       if (!current.enabled) break;

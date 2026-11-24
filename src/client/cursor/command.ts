@@ -34,7 +34,7 @@ type HooksState = "installed" | "missing" | "partial";
 const subcommand = (name: string, flag = ""): string => `${CURSOR_CLI} cursor ${name}${flag}`;
 const settingsFlag = (home: string, configPath: string): string => configPath === cursorPaths(home).config ? "" : ` --settings ${configPath}`;
 const NOT_SET_UP = `Cursor collection is not set up on this machine. Run: ${CURSOR_LOGIN_COMMAND}`;
-const CONTENT_NOTE = "holds prompt text and commands if --enrich was ever on";
+const CONTENT_NOTE = "holds prompt and reply text, commands, tool output and file content unless capture was always off (--no-enrich)";
 const SNAPSHOT_BYTES = 1024 * 1024;
 const LISTED_ENTRIES = 64;
 const RUNTIME = /^runtime-[a-f0-9]{16}(?:[.]tmp)?$/;
@@ -95,7 +95,7 @@ export async function checkCursorFormat(opts: {
 export type CursorInstallOptions = {
   key: string;
   ingestEndpoint: string;
-  /** true turns prompt and tool-detail capture on, false turns it off, undefined keeps the stored choice. */
+  /** true turns prompt and tool-detail capture on, false turns it off, undefined keeps the stored choice (on for a first install). */
   enrich?: boolean;
   /** The same three states for the Cursor account email. */
   identity?: boolean;
@@ -220,10 +220,10 @@ export async function installCursor(plan: CursorInstallPlan, opts: CursorInstall
     const config = readCursorConfig(configPath);
     done("write_config", `${settings.created ? "Created" : "Updated"} ${settings.path}${settings.backupPath ? ` (previous settings: ${settings.backupPath})` : ""}`);
 
-    const hookFiles = [files.hook, files.hookProgram].map(snapshot);
+    const hookFiles = [files.hook, files.readHook, files.hookProgram].map(snapshot);
     undo.push(() => hookFiles.forEach(restore));
     const hook = installCursorHookFiles({ shareDir, stateDir, content: config.content, identity: config.identity, node: config.node });
-    done("install_hook_program", `Installed the hook program and its launcher in ${shareDir}`);
+    done("install_hook_program", `Installed the hook program and its launchers in ${shareDir}`);
 
     const runtimesBefore = new Set(runtimeNames(shareDir));
     const launcherBefore = snapshot(files.collectorLauncher);
@@ -283,9 +283,9 @@ export async function installCursor(plan: CursorInstallPlan, opts: CursorInstall
           updateCursorConfig(configPath, { createdByConnect: owned, createdHookKeys: merged.createdKeys });
         } catch { /* Uninstall then treats the file as the settings describe it. */ }
       }
-      done("merge_hooks", merged.status === "created" ? `Created ${hooksFile} with the six CodeTelemetry hook entries`
-        : merged.status === "updated" ? `Added the six CodeTelemetry hook entries to ${hooksFile}; your other hooks are kept${merged.backupPath ? ` (copy of your file: ${merged.backupPath})` : ""}`
-          : `${hooksFile} already holds the six CodeTelemetry hook entries`);
+      done("merge_hooks", merged.status === "created" ? `Created ${hooksFile} with the eight CodeTelemetry hook entries`
+        : merged.status === "updated" ? `Added the eight CodeTelemetry hook entries to ${hooksFile}; your other hooks are kept${merged.backupPath ? ` (copy of your file: ${merged.backupPath})` : ""}`
+          : `${hooksFile} already holds the eight CodeTelemetry hook entries`);
     } else {
       done("merge_hooks", `${hooksFile} was not edited (--hooks-manual)`);
     }
@@ -312,8 +312,8 @@ export async function installCursor(plan: CursorInstallPlan, opts: CursorInstall
         ? `--hooks-only installed no service. The collector service from an earlier login (${plan.unitPath}) was left as it is.`
         : `No service runs the collector (--hooks-only). Start it under your own supervisor, or in a terminal that stays open: /bin/sh ${files.collectorLauncher}`]),
       ...(plan.mergeHooks ? [] : [hooks === "installed"
-        ? `hooks.json was not edited (--hooks-manual). ${hooksFile} already holds all six CodeTelemetry entries.`
-        : `hooks.json was not edited (--hooks-manual). ${hooksFile} holds ${hooks === "partial" ? "only some" : "none"} of the six CodeTelemetry entries. The entries to put under "hooks":\n${cursorHooksManualBlock(hook.command)}`]),
+        ? `hooks.json was not edited (--hooks-manual). ${hooksFile} already holds all eight CodeTelemetry entries.`
+        : `hooks.json was not edited (--hooks-manual). ${hooksFile} holds ${hooks === "partial" ? "only some" : "none"} of the eight CodeTelemetry entries. The entries to put under "hooks":\n${cursorHooksManualBlock(hook.command)}`]),
     ];
     const summary = [
       "Installed for Cursor:",
@@ -323,7 +323,7 @@ export async function installCursor(plan: CursorInstallPlan, opts: CursorInstall
       ...advice,
       "The Cursor IDE picks the hooks up at once; restart any running cursor-agent session.",
       "Hooks run on the machine where the workspace lives: with Remote-SSH, WSL or a Dev Container, run this command on that host.",
-      "Headless runs (cursor-agent -p) report tools and durations, but no prompts and no tokens.",
+      "Headless runs (cursor-agent -p) report tools, their output and durations, but no prompts, no replies and no tokens.",
       CURSOR_PLATFORM_NOTE,
       `Status: ${subcommand("status", settingsFlag(home, configPath))}`,
       `Remove everything, including the stored key and unsent records: ${purgeCommand}`,
@@ -520,7 +520,7 @@ const STATE_PURPOSES: Readonly<Record<string, string>> = {
   spool: `records waiting to be sent; ${CONTENT_NOTE}`,
   "pending.json": `the batch being sent; ${CONTENT_NOTE}`,
   rejected: `batches the service refused; ${CONTENT_NOTE}`,
-  "checkpoint.json": "what has been read and sent",
+  "checkpoint.json": `what has been read and sent, with reasoning and file content that wait for their record; ${CONTENT_NOTE}`,
   "health.json": "the collector's last status",
   dropped: "count of events the hook could not record",
   "spool-size": "the hook's running total of the spool's size",
@@ -777,8 +777,8 @@ export async function cursorStatus(configPath: string, host: CursorHost = {}): P
   if (!config.enabled) notices.push(`Collection is disabled. \`${enable}\` turns it back on.`);
   if (!nodePathValid) notices.push(CURSOR_NODE_NOTICE);
   if (config.enabled && hooks !== "installed") {
-    notices.push(`${config.hooksFile} holds ${hooks === "partial" ? "only some" : "none"} of the six CodeTelemetry hook entries, so Cursor reports ${hooks === "partial" ? "only part of each session" : "nothing"}. ` +
-      `Another tool may have rewritten the file; \`${enable}\` adds them back.`);
+    notices.push(`${config.hooksFile} holds ${hooks === "partial" ? "only some" : "none"} of the eight CodeTelemetry hook entries, so Cursor reports ${hooks === "partial" ? "only part of each session" : "nothing"}. ` +
+      `An earlier Connect release installed six of them, or another tool rewrote the file; \`${enable}\` adds them back.`);
   }
   if (config.enabled && !running) {
     notices.push(service === "installed"

@@ -14,7 +14,7 @@ import ts from "typescript";
 import { holdsCredentialStrict as holdsCredential, passesSecretArgument, scrubCredentials as releasedScrub, scrubCredentialsStrict as scrubCredentials } from "../../src/client/collector/scrub.ts";
 import { CURSOR_FILE_MARKER, cursorPaths, cursorStateFiles, type CursorNetwork, type CursorNode } from "../../src/client/cursor/config.ts";
 import {
-  CURSOR_HOOK_EVENTS, CURSOR_HOOK_LIMITS, cursorCollectorLauncher, cursorHookLauncher, cursorHookProgram,
+  CURSOR_HOOK_EVENTS, CURSOR_HOOK_LIMITS, CURSOR_READ_RESPONSE, cursorCollectorLauncher, cursorHookLauncher, cursorHookProgram,
   installCursorCollectorLauncher, installCursorHookFiles, removeCursorHookFiles, type CursorSpoolLine,
 } from "../../src/client/cursor/hookProgram.ts";
 
@@ -67,6 +67,14 @@ const runHook = (s: Sandbox, input: string | Buffer | null, opts: { hold?: boole
   execute(process.execPath, [...(opts.preload ? ["-r", opts.preload] : []), s.paths.hookProgram], input, opts);
 const runLauncher = (s: Sandbox, input: string | null, env: Record<string, string> = {}) =>
   execute("/bin/sh", [s.paths.hook], input, { env });
+const runReadLauncher = (s: Sandbox, input: string | null, env: Record<string, string> = {}, opts: { hold?: boolean } = {}) =>
+  execute("/bin/sh", [s.paths.readHook], input, { env, ...opts });
+
+/** The whole contract of the read launcher: status 0, and exactly the line that allows the read. */
+function assertAllows(outcome: Outcome, label = ""): void {
+  assert.deepEqual({ code: outcome.code, signal: outcome.signal, stdout: outcome.stdout, stderr: outcome.stderr },
+    { code: 0, signal: null, stdout: '{"permission":"allow"}\n', stderr: "" }, label);
+}
 
 /** The whole contract with the editor: status 0, and not one byte printed. */
 function assertSilent(outcome: Outcome, label = ""): void {
@@ -118,22 +126,30 @@ function metadataOnly(name: string): Record<string, unknown> {
     case "postToolUseFailure": return { ...tool, failure_type: "error", is_interrupt: false, error_bytes: 29 };
     case "stop": return { ...turn, model_id: "synthetic-auto", status: "completed", loop_count: 0,
       input_tokens: 18250, output_tokens: 310, cache_read_tokens: 17920, cache_write_tokens: 0 };
+    case "afterAgentResponse": return { ...turn, model_id: "synthetic-auto",
+      input_tokens: 18250, output_tokens: 310, cache_read_tokens: 17920, cache_write_tokens: 0 };
     default: throw new Error(`no expectation for ${name}`);
   }
 }
 
-async function capture(s: Sandbox): Promise<Record<string, CursorSpoolLine>> {
-  const captured: Record<string, CursorSpoolLine> = {};
+/** Events that leave no line under a policy: a file read is kept for its
+ *  content and a reply for its text or the turn's reasoning. */
+const lineless = (policy: Policy): string[] => [...(policy.toolDetails ? [] : ["beforeReadFile"]), ...(policy.prompts ? [] : ["afterAgentResponse"])];
+
+async function capture(s: Sandbox, policy: Policy = {}): Promise<Record<string, CursorSpoolLine>> {
+  const captured: Record<string, CursorSpoolLine> = {}, silent = lineless(policy);
   for (const name of Object.keys(EVENTS)) {
+    const before = spoolLines(s).length;
     assertSilent(await runHook(s, event(name)), name);
-    captured[name] = spoolLines(s).at(-1)!;
+    if (silent.includes(name)) assert.equal(spoolLines(s).length, before, `${name} leaves no line`);
+    else captured[name] = spoolLines(s).at(-1)!;
   }
-  assert.equal(spoolLines(s).length, Object.keys(EVENTS).length);
+  assert.equal(spoolLines(s).length, Object.keys(EVENTS).length - silent.length);
   assert.equal(drops(s), 0);
   return captured;
 }
 
-test("the fixture covers the six registered events", () => {
+test("the fixture covers the eight registered events", () => {
   assert.deepEqual([...new Set(Object.values(EVENTS).map(e => e.hook_event_name))].sort(), [...CURSOR_HOOK_EVENTS].sort());
   assert.equal(EVENTS.beforeSubmitPrompt!.prompt.length, 49);
   assert.equal(utf8(EVENTS.postToolUseFailure!.error_message), 29);
@@ -154,7 +170,8 @@ test("metadata-only writes no prompt text, tool input or output, path or email",
     assert.deepEqual(line.p, { prompts: false, toolDetails: false, email: false });
     assert.deepEqual(line.payload, metadataOnly(name), name);
   }
-  assert.equal(new Set(Object.values(captured).map(line => line.id)).size, Object.keys(EVENTS).length);
+  assert.equal(new Set(Object.values(captured).map(line => line.id)).size, Object.keys(EVENTS).length - 2);
+  assert.ok(!("afterAgentResponse" in captured) && !("beforeReadFile" in captured), "a reply and a file read are content only");
   assert.equal(captured.postToolUseRead!.payload.tool_use_id,
     "call-5d0c7a11-22b3-4c44-9d55-66e7f8a9b0c1-0\nfc_1e2d3c4b-5a69-4788-8695-a4b3c2d1e0f9_0", "a tool id with a line break survives");
   const text = spoolText(s);
@@ -164,34 +181,45 @@ test("metadata-only writes no prompt text, tool input or output, path or email",
   assert.equal(fs.statSync(path.join(s.state.spool, fs.readdirSync(s.state.spool)[0]!)).mode & 0o777, 0o600);
 });
 
-test("--enrich keeps the scrubbed prompt and allow-listed tool arguments, and still no output, content or email", async t => {
+test("--enrich keeps the prompt, the reply, the reasoning, tool arguments, tool output, failure text and file content, and still no email", async t => {
   const s = sandbox(t, { prompts: true, toolDetails: true });
-  const captured = await capture(s), root = "/srv/fixture/repo-alpha";
+  const captured = await capture(s, { prompts: true, toolDetails: true }), root = "/srv/fixture/repo-alpha";
   const withRoot = (name: string, extra: Record<string, unknown>) => {
     const { generation_id, model, model_id, cursor_version, composer_mode, ...rest } = metadataOnly(name);
     return { generation_id, model, ...(model_id ? { model_id } : {}), cursor_version, ...(composer_mode ? { composer_mode } : {}), workspace_root: root, ...rest, ...extra };
   };
   assert.deepEqual(captured.beforeSubmitPrompt!.payload, withRoot("beforeSubmitPrompt", { prompt: "CANARY_PROMPT rename the helper and run the tests" }));
-  assert.deepEqual(captured.postToolUseShell!.payload, withRoot("postToolUseShell", { tool_input: { command: "npm test -- CANARY_COMMAND", cwd: root, timeout: 30000 } }));
-  assert.deepEqual(captured.postToolUseRead!.payload, withRoot("postToolUseRead", { tool_input: { file_path: `${root}/src/CANARY_PATH.ts` } }));
-  assert.deepEqual(captured.postToolUseWrite!.payload, withRoot("postToolUseWrite", { tool_input: { file_path: `${root}/src/CANARY_PATH.ts` } }));
-  assert.deepEqual(captured.postToolUseGrep!.payload, withRoot("postToolUseGrep", { tool_input: { pattern: "CANARY_PATTERN", glob: "*.ts", output_mode: "files_with_matches" } }));
-  assert.deepEqual(captured.postToolUseTask!.payload, withRoot("postToolUseTask",
-    { tool_input: { subagent_type: "explore", run_in_background: false, model: "fast", description: "CANARY_TASK_DESCRIPTION list the callers" } }));
-  assert.deepEqual(captured.postToolUseFailure!.payload, withRoot("postToolUseFailure", { tool_input: { command: "false # CANARY_COMMAND", cwd: root, timeout: 30000 } }));
+  // A shell's output is what the command printed; any other tool's is the string Cursor sent.
+  assert.deepEqual(captured.postToolUseShell!.payload, withRoot("postToolUseShell",
+    { output: "CANARY_OUTPUT 2 passing\n", tool_input: { command: "npm test -- CANARY_COMMAND", cwd: root, timeout: 30000 } }));
+  assert.deepEqual(captured.postToolUseRead!.payload, withRoot("postToolUseRead",
+    { output: EVENTS.postToolUseRead!.tool_output, tool_input: { file_path: `${root}/src/CANARY_PATH.ts` } }));
+  assert.deepEqual(captured.postToolUseWrite!.payload, withRoot("postToolUseWrite",
+    { output: EVENTS.postToolUseWrite!.tool_output, tool_input: { file_path: `${root}/src/CANARY_PATH.ts` }, content: "CANARY_WRITE_CONTENT export const helper = 2;\n" }));
+  assert.deepEqual(captured.postToolUseGrep!.payload, withRoot("postToolUseGrep",
+    { output: EVENTS.postToolUseGrep!.tool_output, tool_input: { pattern: "CANARY_PATTERN", glob: "*.ts", output_mode: "files_with_matches" } }));
+  assert.deepEqual(captured.postToolUseTask!.payload, withRoot("postToolUseTask", { output: EVENTS.postToolUseTask!.tool_output,
+    tool_input: { subagent_type: "explore", run_in_background: false, model: "fast", description: "CANARY_TASK_DESCRIPTION list the callers" } }));
+  assert.deepEqual(captured.postToolUseFailure!.payload, withRoot("postToolUseFailure",
+    { error_message: "CANARY_ERROR command exited 1", tool_input: { command: "false # CANARY_COMMAND", cwd: root, timeout: 30000 } }));
   assert.deepEqual(captured.stop!.payload, withRoot("stop", {}));
-  for (const name of ["afterAgentThought", "afterAgentThoughtDefault", "afterShellExecution"]) {
-    assert.deepEqual(captured[name]!.payload, metadataOnly(name), "context records carry no option-dependent field");
+  assert.deepEqual(captured.afterAgentResponse!.payload, withRoot("afterAgentResponse", { text: "CANARY_REPLY the helper is renamed and the tests pass" }));
+  assert.deepEqual(Object.keys(captured.afterAgentResponse!.payload).slice(-5), ["text", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"]);
+  assert.deepEqual(captured.beforeReadFile!.payload, { tool_use_id: EVENTS.beforeReadFile!.tool_use_id, content: "CANARY_READ_CONTENT export const helper = 1;\n" },
+    "a file read keeps the call it belongs to and what was read, and not the path");
+  for (const name of ["afterAgentThought", "afterAgentThoughtDefault"]) {
+    assert.deepEqual(captured[name]!.payload, { ...metadataOnly(name), text: "CANARY_THOUGHT the helper is used in two modules" });
   }
+  assert.deepEqual(captured.afterShellExecution!.payload, metadataOnly("afterShellExecution"), "the shell context record carries no option-dependent field");
   for (const line of Object.values(captured)) assert.deepEqual(line.p, { prompts: true, toolDetails: true, email: false });
   const text = spoolText(s);
-  for (const forbidden of ["CANARY_FILE_CONTENT", "CANARY_OUTPUT", "CANARY_ERROR", "CANARY_THOUGHT", "CANARY_EDIT", "CANARY_TASK_PROMPT",
+  for (const forbidden of ["CANARY_FILE_CONTENT", "CANARY_EDIT", "CANARY_TASK_PROMPT",
     "CANARY_RESPONSE", "CANARY_TRANSCRIPT", "CANARY_ATTACHMENT", "repo-beta", "example.test", "head_limit"]) {
     assert.ok(!text.includes(forbidden), `--enrich spool holds ${forbidden}`);
   }
 });
 
-test("--identity alone adds the account email to the four uploaded events and nothing else", async t => {
+test("--identity alone adds the account email to the uploaded events and nothing else", async t => {
   const s = sandbox(t, { email: true });
   const captured = await capture(s);
   for (const [name, line] of Object.entries(captured)) {
@@ -211,13 +239,25 @@ test("each content option adds only its own fields", async t => {
   for (const name of ["postToolUseShell", "postToolUseTask", "postToolUseFailure", "stop"]) {
     assert.deepEqual(await payloadOf(prompts, event(name)), metadataOnly(name), `prompts alone changed ${name}`);
   }
+  assert.deepEqual(await payloadOf(prompts, event("afterAgentResponse")), { ...metadataOnly("afterAgentResponse"), text: "CANARY_REPLY the helper is renamed and the tests pass" });
+  assert.equal((await payloadOf(prompts, event("afterAgentThought"))).text, "CANARY_THOUGHT the helper is used in two modules");
+  assertSilent(await runHook(prompts, event("beforeReadFile")));
+  assert.ok(!/CANARY_(OUTPUT|ERROR|WRITE_CONTENT|READ_CONTENT)/.test(spoolText(prompts)), "prompts alone keeps no tool content");
   const details = sandbox(t, { toolDetails: true });
   const prompt = await payloadOf(details, event("beforeSubmitPrompt"));
   assert.ok(!("prompt" in prompt));
   assert.equal(prompt.workspace_root, "/srv/fixture/repo-alpha");
   assert.deepEqual((await payloadOf(details, event("postToolUseTask"))).tool_input, { subagent_type: "explore", run_in_background: false, model: "fast" },
     "a Task description is prompt text and needs the prompts option as well");
-  assert.ok(!spoolText(details).includes("CANARY_PROMPT") && !spoolText(details).includes("CANARY_TASK"));
+  assert.equal((await payloadOf(details, event("postToolUseShell"))).output, "CANARY_OUTPUT 2 passing\n");
+  assert.equal((await payloadOf(details, event("postToolUseFailure"))).error_message, "CANARY_ERROR command exited 1");
+  assert.equal((await payloadOf(details, event("postToolUseWrite"))).content, "CANARY_WRITE_CONTENT export const helper = 2;\n");
+  assert.equal((await payloadOf(details, event("beforeReadFile"))).content, "CANARY_READ_CONTENT export const helper = 1;\n");
+  assert.deepEqual(await payloadOf(details, event("afterAgentThought")), metadataOnly("afterAgentThought"), "reasoning text needs the prompts option");
+  const lines = spoolLines(details).length;
+  assertSilent(await runHook(details, event("afterAgentResponse")));
+  assert.equal(spoolLines(details).length, lines, "a reply leaves no line without the prompts option");
+  assert.ok(!/CANARY_(PROMPT|TASK|REPLY|THOUGHT)/.test(spoolText(details)));
 });
 
 test("prompt text is scrubbed exactly as the shared scrubber does, then cut", async t => {
@@ -388,8 +428,12 @@ test("tool arguments are kept whole or withheld whole", async t => {
     assert.ok(!("tool_input" in await shell({ command: "ls", file_path: "/srv/x" }, { tool_name })), `${tool_name} has no allow-list`);
   }
   const write = await payloadOf(s, event("postToolUseWrite"));
-  assert.deepEqual(write.tool_input, { file_path: "/srv/fixture/repo-alpha/src/CANARY_PATH.ts" });
-  assert.ok(!spoolText(s).includes("CANARY_FILE_CONTENT"), "file content is never copied");
+  assert.deepEqual(write.tool_input, { file_path: "/srv/fixture/repo-alpha/src/CANARY_PATH.ts" }, "what was written goes beside the arguments, never inside them");
+  assert.equal(write.content, "CANARY_WRITE_CONTENT export const helper = 2;\n");
+  // Withheld arguments withhold the written content with them.
+  const hidden = await payloadOf(s, event("postToolUseWrite", { tool_input: { file_path: "/srv/fixture/password=hunter2-dir/a.ts", content: "CANARY_HIDDEN_WRITE" } }));
+  assert.ok(!("tool_input" in hidden) && !("content" in hidden));
+  assert.ok(!spoolText(s).includes("CANARY_HIDDEN_WRITE") && !spoolText(s).includes("CANARY_FILE_CONTENT"));
   const secretPath = await payloadOf(s, event("stop", { workspace_roots: ["/srv/fixture/password=hunter2-dir"] }));
   assert.ok(!("workspace_root" in secretPath), "a path the scrubber would change is withheld, not altered");
   for (const workspace_roots of [[], [7], "/srv/x", [""], ["/" + "p".repeat(2048)]]) {
@@ -446,25 +490,28 @@ test("only values of the expected type and size are copied", async t => {
 test("a prompt that would take its line over the bound is cut to the longest beginning that fits", async t => {
   const s = sandbox(t, { prompts: true, toolDetails: true });
   const lastLineBytes = () => utf8(spoolText(s).trimEnd().split("\n").at(-1)!) + 1;
+  // A prompt line keeps the bound every service release accepts for a record.
+  const LINE = CURSOR_HOOK_LIMITS.promptLineBytes;
+  assert.equal(LINE, 32 * 1024);
   // Three bytes a character: the whole prompt would be 48 KiB of a 32 KiB line.
   const wide = String.fromCodePoint(0x4e16).repeat(CURSOR_HOOK_LIMITS.promptChars);
-  assert.ok(utf8(wide) > CURSOR_HOOK_LIMITS.lineBytes);
+  assert.ok(utf8(wide) > LINE);
   const payload = await payloadOf(s, event("beforeSubmitPrompt", { prompt: wide }));
   assert.ok(payload.prompt.length > 10000 && payload.prompt.length < CURSOR_HOOK_LIMITS.promptChars);
   assert.equal(payload.prompt, wide.slice(0, payload.prompt.length), "what is kept is the beginning, unchanged");
   assert.equal(payload.prompt_length, CURSOR_HOOK_LIMITS.promptChars, "the length is that of the original");
   assert.equal(payload.workspace_root, "/srv/fixture/repo-alpha");
-  assert.ok(lastLineBytes() <= CURSOR_HOOK_LIMITS.lineBytes);
-  assert.ok(lastLineBytes() > CURSOR_HOOK_LIMITS.lineBytes - 3, "one more character would not fit");
+  assert.ok(lastLineBytes() <= LINE);
+  assert.ok(lastLineBytes() > LINE - 3, "one more character would not fit");
 
   // Characters that JSON writes as six bytes each, and pairs that must stay whole.
   const control = await payloadOf(s, event("beforeSubmitPrompt", { prompt: "\u0001".repeat(CURSOR_HOOK_LIMITS.promptChars) }));
   assert.match(control.prompt, /^\u0001{4000,5461}$/);
-  assert.ok(lastLineBytes() <= CURSOR_HOOK_LIMITS.lineBytes && lastLineBytes() > CURSOR_HOOK_LIMITS.lineBytes - 6);
+  assert.ok(lastLineBytes() <= LINE && lastLineBytes() > LINE - 6);
   const pair = String.fromCodePoint(0x1f600);
   for (const lead of ["", "x"]) {
     const pairs = await payloadOf(s, event("beforeSubmitPrompt", { prompt: lead + pair.repeat(8191) }));
-    assert.ok(lastLineBytes() <= CURSOR_HOOK_LIMITS.lineBytes);
+    assert.ok(lastLineBytes() <= LINE);
     assert.equal(pairs.prompt, lead + pair.repeat((pairs.prompt.length - lead.length) / 2), "a cut never leaves half a character");
     assert.ok(pairs.prompt.length > 15000);
   }
@@ -477,7 +524,7 @@ test("a prompt that would take its line over the bound is cut to the longest beg
 
 test("events Connect did not register leave no line and no drop; an unusable conversation id is a drop", async t => {
   const s = sandbox(t);
-  for (const hook_event_name of ["sessionStart", "afterAgentResponse", "beforeReadFile", "", 7, null, undefined, "constructor"]) {
+  for (const hook_event_name of ["sessionStart", "afterFileEdit", "beforeTabFileRead", "preToolUse", "", 7, null, undefined, "constructor"]) {
     assertSilent(await runHook(s, event("stop", { hook_event_name })));
   }
   assert.deepEqual(spoolLines(s), []);
@@ -831,8 +878,8 @@ test("install writes private executables once, rewrites only what changed and cl
   const s = sandbox(t);
   const mode = (file: string) => fs.statSync(file).mode & 0o777;
   for (const directory of [s.paths.shareDir, s.paths.stateDir, s.state.spool]) assert.equal(mode(directory), 0o700);
-  for (const file of [s.paths.hook, s.paths.hookProgram]) assert.equal(mode(file), 0o700);
-  assert.deepEqual(fs.readdirSync(s.paths.shareDir).sort(), ["hook.cjs", "hook.sh"]);
+  for (const file of [s.paths.hook, s.paths.readHook, s.paths.hookProgram]) assert.equal(mode(file), 0o700);
+  assert.deepEqual(fs.readdirSync(s.paths.shareDir).sort(), ["hook-read.sh", "hook.cjs", "hook.sh"]);
   assert.deepEqual(s.install(), { command: s.paths.hook, written: [] }, "an unchanged install writes nothing");
 
   fs.writeFileSync(s.state.nodePath, "/removed/node\n");
@@ -844,14 +891,17 @@ test("install writes private executables once, rewrites only what changed and cl
   assert.equal(mode(s.state.spool), 0o700);
   assert.equal(fs.existsSync(s.state.nodePath) || fs.existsSync(s.state.nodeStale), false);
   assert.match(fs.readFileSync(s.paths.hookProgram, "utf8"), /^var POLICY = \{"prompts":true,"toolDetails":false,"email":false\};$/m);
-  assert.deepEqual(s.install({ prompts: true }, { execPath: "/opt/fixture/node" }).written, [s.paths.hook], "a new interpreter rewrites only the launcher");
-  assert.deepEqual(fs.readdirSync(s.paths.shareDir).sort(), ["hook.cjs", "hook.sh"], "no temporary is left behind");
+  assert.deepEqual(s.install({ prompts: true }, { execPath: "/opt/fixture/node" }).written, [s.paths.hook], "a new interpreter rewrites only the launcher that names one");
+  assert.deepEqual(s.install({ prompts: true, toolDetails: true }, { execPath: "/opt/fixture/node" }).written, [s.paths.hookProgram, s.paths.readHook],
+    "turning file content on gives the file-read launcher the program to run");
+  assert.deepEqual(s.install({ prompts: true, toolDetails: true }, { execPath: "/opt/fixture/other-node" }).written, [s.paths.hook, s.paths.readHook]);
+  assert.deepEqual(fs.readdirSync(s.paths.shareDir).sort(), ["hook-read.sh", "hook.cjs", "hook.sh"], "no temporary is left behind");
 
   const collector = installCursorCollectorLauncher({ shareDir: s.paths.shareDir, stateDir: s.paths.stateDir, node: { execPath: process.execPath },
     entry: path.join(s.paths.shareDir, "runtime-0000", "bin.js"), configPath: s.paths.config });
   assert.deepEqual(collector, { path: s.paths.collectorLauncher, written: true });
   assert.equal(mode(s.paths.collectorLauncher), 0o700);
-  assert.deepEqual(removeCursorHookFiles(s.paths.shareDir), [s.paths.hook, s.paths.hookProgram]);
+  assert.deepEqual(removeCursorHookFiles(s.paths.shareDir), [s.paths.hook, s.paths.readHook, s.paths.hookProgram]);
   assert.deepEqual(fs.readdirSync(s.paths.shareDir), ["collector.sh"]);
   assert.deepEqual(removeCursorHookFiles(s.paths.shareDir, { collector: true }), [s.paths.collectorLauncher]);
   assert.deepEqual(removeCursorHookFiles(s.paths.shareDir, { collector: true }), []);
@@ -1032,4 +1082,242 @@ test("the collector launcher exports the recorded network settings, starts the c
   assert.match(lines[3]!, /^trap /);
   fs.writeFileSync(none.script, [...lines.slice(0, 4), "exit 2", ...lines.slice(4)].join("\n"));
   assert.equal((await execute("/bin/sh", [none.script], null, { env: { PATH: "/usr/bin:/bin" } })).code, 1);
+});
+
+// ---- Content: tool output, failure text, file content, reply and reasoning ----
+
+const CONTENT = CURSOR_HOOK_LIMITS.contentChars, REPLY = CURSOR_HOOK_LIMITS.replyChars, THOUGHT = CURSOR_HOOK_LIMITS.thoughtChars;
+const PAIR = String.fromCodePoint(0x1f600);
+const shellOutput = (output: unknown, exitCode = 0) => JSON.stringify({ output, exitCode });
+
+/** Every content key: the event that carries it, how to set its source value,
+ *  the key it becomes and its cut. */
+const CONTENT_KINDS: Array<{ name: string; key: string; max: number; patch: (value: string) => Record<string, unknown> }> = [
+  { name: "postToolUseShell", key: "output", max: CONTENT, patch: value => ({ tool_output: shellOutput(value) }) },
+  { name: "postToolUseRead", key: "output", max: CONTENT, patch: value => ({ tool_output: value }) },
+  { name: "postToolUseFailure", key: "error_message", max: CONTENT, patch: value => ({ error_message: value }) },
+  { name: "postToolUseWrite", key: "content", max: CONTENT, patch: value => ({ tool_input: { file_path: "/srv/fixture/repo-alpha/a.ts", content: value } }) },
+  { name: "beforeReadFile", key: "content", max: CONTENT, patch: value => ({ content: value }) },
+  { name: "afterAgentResponse", key: "text", max: REPLY, patch: value => ({ text: value }) },
+  { name: "afterAgentThought", key: "text", max: THOUGHT, patch: value => ({ text: value }) },
+];
+
+test("the content cuts are the ones the wire contract names", () => {
+  assert.deepEqual([CONTENT, REPLY, THOUGHT, CURSOR_HOOK_LIMITS.recordBytes], [8192, 16384, 2048, 65536]);
+  assert.ok(CURSOR_HOOK_LIMITS.lineBytes > CURSOR_HOOK_LIMITS.recordBytes + 1024, "a record inside its bound always fits its line");
+});
+
+test("every content string is cut to its length in UTF-16 units, keeping the start and never half a character", async t => {
+  const s = sandbox(t, { prompts: true, toolDetails: true });
+  for (const { name, key, max, patch } of CONTENT_KINDS) {
+    const label = `${name}.${key}`;
+    const exact = await payloadOf(s, event(name, patch("a".repeat(max))));
+    assert.equal(exact[key], "a".repeat(max), `${label}: a value at the cut is kept whole`);
+    const long = await payloadOf(s, event(name, patch("word ".repeat(max))));
+    assert.equal(long[key], "word ".repeat(max).slice(0, max), `${label}: the start is kept`);
+    // The pair straddles the cut: its high half would be the last unit kept.
+    const split = await payloadOf(s, event(name, patch("x".repeat(max - 1) + PAIR + "y")));
+    assert.equal(split[key], "x".repeat(max - 1), `${label}: cut one unit earlier`);
+    // The pair ends exactly at the cut and stays.
+    const kept = await payloadOf(s, event(name, patch("x".repeat(max - 2) + PAIR + "y")));
+    assert.equal(kept[key], "x".repeat(max - 2) + PAIR, `${label}: a whole pair at the cut is kept`);
+  }
+  assert.equal(drops(s), 0);
+});
+
+test("a content value that is empty or not text adds no key", async t => {
+  const s = sandbox(t, { prompts: true, toolDetails: true });
+  for (const value of ["", 7, null, ["text"], { text: "x" }, true]) {
+    for (const { name, key, patch } of CONTENT_KINDS.filter(kind => kind.name !== "postToolUseShell" && kind.name !== "beforeReadFile")) {
+      const payload = await payloadOf(s, event(name, patch(value as string)));
+      assert.ok(!(key in payload), `${name}.${key} kept ${JSON.stringify(value)}`);
+    }
+    // A file read without content is not kept at all.
+    const before = spoolLines(s).length;
+    assertSilent(await runHook(s, event("beforeReadFile", { content: value })));
+    assert.equal(spoolLines(s).length, before);
+  }
+  assertSilent(await runHook(s, event("beforeReadFile", { tool_use_id: undefined })));
+  // A shell's output is the "output" string inside the JSON Cursor sends, and nothing else of it.
+  for (const tool_output of [shellOutput(""), shellOutput(7), "not json", JSON.stringify({ exitCode: 0 }), JSON.stringify(["x"]), 7, null]) {
+    assert.ok(!("output" in await payloadOf(s, event("postToolUseShell", { tool_output }))), `kept ${JSON.stringify(tool_output)}`);
+  }
+  assert.equal((await payloadOf(s, event("postToolUseShell", { tool_output: { output: "from an object\n", exitCode: 0 } }))).output, "from an object\n");
+  assert.equal((await payloadOf(s, event("postToolUseShell", { tool_output: shellOutput("ok\n") }))).output, "ok\n");
+  // A reply with no text still leaves its line: the turn's reasoning may ride on it.
+  assert.deepEqual(await payloadOf(s, event("afterAgentResponse", { text: "" })),
+    { generation_id: TURN, model: "default", model_id: "synthetic-auto", cursor_version: "2099.1.2-synthetic", workspace_root: "/srv/fixture/repo-alpha",
+      input_tokens: 18250, output_tokens: 310, cache_read_tokens: 17920, cache_write_tokens: 0 });
+  assert.equal(drops(s), 0);
+});
+
+test("a reply copies the four counters as a stop does, and nothing else of the event", async t => {
+  const s = sandbox(t, { prompts: true, toolDetails: true, email: true });
+  const reply = await payloadOf(s, event("afterAgentResponse", { input_tokens: "18250", output_tokens: -1, cache_read_tokens: "x".repeat(33), cache_write_tokens: null,
+    status: "completed", loop_count: 0, prompt: "CANARY_PROMPT", tool_output: "CANARY_OUTPUT", content: "CANARY_FILE_CONTENT" }));
+  assert.deepEqual(reply, { generation_id: TURN, model: "default", model_id: "synthetic-auto", cursor_version: "2099.1.2-synthetic",
+    workspace_root: "/srv/fixture/repo-alpha", user_email: "dev.fixture@example.test",
+    text: "CANARY_REPLY the helper is renamed and the tests pass", input_tokens: "18250", output_tokens: -1 });
+});
+
+test("every content string is scrubbed exactly as the shared scrubber does, before it is cut", async t => {
+  const s = sandbox(t, { prompts: true, toolDetails: true });
+  const samples = [
+    `use Bearer ${"b".repeat(24)} for the call`,
+    `set AWS_SECRET_ACCESS_KEY=${SECRET} then run`,
+    `aws ${"AKIA" + "Q".repeat(16)} and ${"gh" + "p_" + "a1".repeat(12)} and ${"sk-" + "z9".repeat(10)}`,
+    `-----BEGIN RSA ${"PRIVATE"} KEY-----\nFIXTUREBODY\n-----END RSA ${"PRIVATE"} KEY-----\nafter the block`,
+    `key ${"cot" + "_" + "k".repeat(28)} end`,
+    `my db is postgres://admin:${SECRET}@db.example.test/prod`,
+  ];
+  for (const { name, key, max, patch } of CONTENT_KINDS) {
+    for (const sample of samples) {
+      const payload = await payloadOf(s, event(name, patch(sample)));
+      assert.equal(payload[key], scrubCredentials(sample, max), `${name}.${key}: ${sample.slice(0, 24)}`);
+      assert.notEqual(payload[key], sample);
+    }
+    // Scrubbed first, cut second: a secret that ends past the cut leaves no piece inside it.
+    const straddle = `${"lead ".repeat(Math.floor((max - 20) / 5))}${"sk-"}${"s".repeat(64)} tail`;
+    const cut = await payloadOf(s, event(name, patch(straddle)));
+    assert.ok(straddle.indexOf("sk-") < max && straddle.indexOf("sk-") + 67 > max, "the secret crosses the cut");
+    assert.ok(!cut[key].includes("ss"), `${name}.${key}: part of a secret that crosses the cut was kept`);
+    assert.equal(cut[key], scrubCredentials(straddle, max));
+    // A token that runs past the scrubbed prefix is removed whole, not matched in part.
+    const beyond = `${"lead ".repeat(Math.floor(max / 5) - 2)}${"sk-"}${"s".repeat(3 * max)} tail`;
+    const kept = await payloadOf(s, event(name, patch(beyond)));
+    assert.ok(!kept[key].includes("sss") && kept[key].length <= max, `${name}.${key}: a token longer than the scrubbed prefix`);
+  }
+  assert.ok(!spoolText(s).includes(SECRET) && !spoolText(s).includes("FIXTUREBODY"));
+  // Scrubbing changes a written file's content in place; only its arguments are all-or-nothing.
+  const write = await payloadOf(s, event("postToolUseWrite", { tool_input: { file_path: "/srv/fixture/repo-alpha/.env", content: `DB_PASSWORD=${SECRET}\nPORT=8080\n` } }));
+  assert.deepEqual(write.tool_input, { file_path: "/srv/fixture/repo-alpha/.env" });
+  assert.equal(write.content, scrubCredentials(`DB_PASSWORD=${SECRET}\nPORT=8080\n`, CONTENT));
+  assert.match(write.content, /^<REDACTED>\nPORT=8080\n$/);
+});
+
+test("content that JSON or UTF-8 widens past the record bound is halved, longest string first, until the record fits", async t => {
+  const s = sandbox(t, { prompts: true, toolDetails: true });
+  const recordBytes = (hook: string, payload: unknown) => utf8({ hook, payload, context: {} });
+  const BOUND = CURSOR_HOOK_LIMITS.recordBytes;
+  // Six bytes a character: 8,192 units of output and 3,000 of content are 66 KiB of a 64 KiB record.
+  const control = "\u0001".repeat(CONTENT);
+  const write = await payloadOf(s, event("postToolUseWrite", { tool_output: control, tool_input: { file_path: "/srv/fixture/repo-alpha/a.bin", content: control.slice(0, 3000) } }));
+  assert.ok(recordBytes("postToolUse", write) <= BOUND);
+  // The longer one (the output) is halved once; the other is left whole.
+  assert.equal(write.output.length, CONTENT / 2);
+  assert.equal(write.content.length, 3000);
+  // Two strings of 96 KiB together: the longest is halved each time, whichever it is by then.
+  const both = await payloadOf(s, event("postToolUseWrite", { tool_output: control, tool_input: { file_path: "/srv/fixture/repo-alpha/a.bin", content: control.slice(0, CONTENT - 2) } }));
+  assert.deepEqual([both.output.length, both.content.length], [CONTENT / 2, (CONTENT - 2) / 2]);
+  assert.ok(recordBytes("postToolUse", both) <= BOUND);
+  assert.deepEqual(write.tool_input, { file_path: "/srv/fixture/repo-alpha/a.bin" }, "metadata is never shortened");
+  assert.ok(utf8(spoolText(s).trimEnd().split("\n").at(-1)!) < CURSOR_HOOK_LIMITS.lineBytes);
+
+  // A reply of 16,384 six-byte units is halved until it fits: 96 KiB, then 48 KiB.
+  const reply = await payloadOf(s, event("afterAgentResponse", { text: "\u0001".repeat(REPLY) }));
+  assert.equal(reply.text.length, REPLY / 2);
+  assert.ok(recordBytes("afterAgentResponse", reply) <= BOUND);
+  assert.equal(reply.input_tokens, 18250);
+
+  // A half that would end inside a pair ends one unit earlier.
+  const pairs = await payloadOf(s, event("afterAgentResponse", { text: "\u0001" + PAIR.repeat(8191) + "\u0001" }));
+  assert.ok(pairs.text.length === 16384, "four bytes a pair fits whole");
+  const mixed = "\u0001".repeat(8191) + PAIR + "\u0001".repeat(8191);
+  const halved = await payloadOf(s, event("afterAgentResponse", { text: mixed }));
+  assert.equal(halved.text, "\u0001".repeat(8191), "floor of half is 8,192 units, whose last would be half a pair");
+
+  // Text inside the bound is not touched.
+  const wide = String.fromCodePoint(0x4e16).repeat(REPLY);
+  assert.equal((await payloadOf(s, event("afterAgentResponse", { text: wide }))).text, wide, "three bytes a character is 48 KiB");
+  assert.equal(drops(s), 0);
+});
+
+test("the read launcher prints the line that allows the read before anything else, exits 0 and records the content", async t => {
+  const s = sandbox(t, { toolDetails: true });
+  const text = fs.readFileSync(s.paths.readHook, "utf8").split("\n");
+  assert.equal(CURSOR_READ_RESPONSE, '{"permission":"allow"}');
+  assert.deepEqual(JSON.parse(CURSOR_READ_RESPONSE), { permission: "allow" });
+  assert.deepEqual(text.slice(0, 2), ["#!/bin/sh", `# ${CURSOR_FILE_MARKER}`]);
+  assert.deepEqual(text.slice(3, 6), ["trap 'exit 0' EXIT", `printf '%s\\n' '{"permission":"allow"}'`, "exec >/dev/null 2>&1"],
+    "the answer is printed before an interpreter is looked for or the program runs");
+  assert.equal(text.slice(6).join("\n"), fs.readFileSync(s.paths.hook, "utf8").split("\n").slice(5).join("\n"), "everything after it is the ordinary launcher");
+  assert.ok(!fs.readFileSync(s.paths.hook, "utf8").includes("permission"), "the launcher of every other event prints nothing");
+
+  assertAllows(await runReadLauncher(s, event("beforeReadFile")));
+  assert.deepEqual(spoolLines(s).map(line => [line.hook, line.payload]),
+    [["beforeReadFile", { tool_use_id: EVENTS.beforeReadFile!.tool_use_id, content: "CANARY_READ_CONTENT export const helper = 1;\n" }]]);
+  // With the option off there is nothing to record: the launcher allows the read and starts no interpreter.
+  const off = sandbox(t, { prompts: true });
+  assert.deepEqual(fs.readFileSync(off.paths.readHook, "utf8").split("\n"),
+    ["#!/bin/sh", `# ${CURSOR_FILE_MARKER}`, text[2], "trap 'exit 0' EXIT", `printf '%s\\n' '{"permission":"allow"}'`, "exit 0", ""]);
+  assertAllows(await runReadLauncher(off, event("beforeReadFile"), { PATH: "" }));
+  assertAllows(await runReadLauncher(off, null, {}, { hold: true }), "it does not wait for its input");
+  assert.deepEqual(spoolLines(off), []);
+  assert.equal(drops(off), 0);
+  // The program itself keeps no file content without the option, however it is started.
+  assertSilent(await runHook(off, event("beforeReadFile")));
+  assert.deepEqual(spoolLines(off), []);
+});
+
+test("the read launcher allows the read whatever the interpreter, the program, the input or the state directory does", async t => {
+  const s = sandbox(t, { toolDetails: true }), gone = path.join(s.root, "removed", "node");
+  const empty = path.join(s.root, "empty-bin");
+  fs.mkdirSync(empty);
+  s.install({ toolDetails: true }, { execPath: gone });
+  for (const env of [{ PATH: "" }, { PATH: empty }, { PATH: "relative-bin" }]) {
+    assertAllows(await runReadLauncher(s, event("beforeReadFile"), env), `no interpreter with ${JSON.stringify(env)}`);
+  }
+  for (const body of ["echo to-stdout; echo to-stderr >&2; exit 2", "exit 2", "exit 1", "kill -9 $$", "cat >/dev/null; exit 2",
+    `echo '{"permission":"deny"}'; exit 0`]) {
+    s.install({ toolDetails: true }, { execPath: interpreter(path.join(s.root, "bad", "node"), body) });
+    assertAllows(await runReadLauncher(s, event("beforeReadFile")), body);
+  }
+  s.install({ toolDetails: true }, { execPath: process.execPath });
+  for (const input of ["", "not json", "[]", JSON.stringify({ hook_event_name: "beforeReadFile" }), event("beforeReadFile", { content: "x".repeat(CURSOR_HOOK_LIMITS.stdinBytes) })]) {
+    assertAllows(await runReadLauncher(s, input), `input of ${input.length} characters`);
+  }
+  // Input that never ends: the answer is out at once and the process ends at the hook's deadline.
+  const held = await runReadLauncher(s, event("beforeReadFile").slice(0, 40), {}, { hold: true });
+  assertAllows(held, "stdin held open");
+  assert.ok(held.elapsedMs < 5000, `the launcher took ${Math.round(held.elapsedMs)} ms`);
+
+  const onPath = interpreter(path.join(s.root, "bin", "node"));
+  s.install({ toolDetails: true }, { execPath: gone });
+  fs.rmSync(s.paths.stateDir, { recursive: true });
+  assertAllows(await runReadLauncher(s, event("beforeReadFile"), { PATH: path.dirname(onPath) }), "no state directory");
+  s.install({ toolDetails: true }, { execPath: process.execPath });
+  fs.rmSync(s.paths.hookProgram);
+  assertAllows(await runReadLauncher(s, event("beforeReadFile")), "a missing program");
+  fs.writeFileSync(s.paths.hookProgram, `process.stdout.write('{"permission":"deny"}'); process.stderr.write('y'); process.exit(2);`);
+  assertAllows(await runReadLauncher(s, event("beforeReadFile")), "a program that prints a denial and exits 2");
+});
+
+// The shapes for which the service does not store a content string. What the
+// scrubber leaves in place of a credential must be none of them.
+const WITHHELD_SHAPES = [
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/, /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/, /\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}/, /\bgh[pousr]_[A-Za-z0-9]{20,}/,
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}/, /\bnpm_[A-Za-z0-9]{20,}/, /\bAIza[A-Za-z0-9_-]{20,}/, /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/,
+];
+
+test("what the scrubber writes in place of a credential has no provider token or key header shape", async t => {
+  const tokens = [
+    `-----BEGIN RSA ${"PRIVATE"} KEY-----\nFIXTUREBODY\n-----END RSA ${"PRIVATE"} KEY-----`, `-----BEGIN OPENSSH ${"PRIVATE"} KEY-----\nunterminated`,
+    "AKIA" + "Q".repeat(16), "ASIA" + "Q".repeat(16), "sk-" + "z9".repeat(10), "sk-ant-" + "z9".repeat(10), "gh" + "p_" + "a1".repeat(12), "gh" + "s_" + "a1".repeat(12),
+    "xox" + "b-" + "1234567890-abcdef", "npm" + "_" + "a1".repeat(12), "AIza" + "a1".repeat(12), `${"ey" + "J" + "a".repeat(10)}.${"b".repeat(10)}.${"c".repeat(10)}`,
+  ];
+  for (const token of tokens) assert.ok(WITHHELD_SHAPES.some(shape => shape.test(token)), `the sample is a withheld shape: ${token.slice(0, 12)}`);
+  // The two markers themselves, alone and where a pattern keeps the key before them.
+  const markers = ["<REDACTED>", "cot_…k9Zq", "token=<REDACTED>", `"api_key": "<REDACTED>"`, "password is <REDACTED>", "<REDACTED><REDACTED>", "<REDACTED> <REDACTED>"];
+  for (const marker of markers) for (const shape of WITHHELD_SHAPES) assert.ok(!shape.test(marker), `${marker} reads as ${shape}`);
+  const texts = [...tokens.map(token => `before ${token} after`), ...tokens.map(token => `token=${token}`), tokens.join(" "), tokens.join("\n"),
+    `key ${"cot" + "_" + "k".repeat(28)} end`, ...LEAKY_PROMPTS];
+  const s = sandbox(t, { prompts: true, toolDetails: true });
+  for (const text of texts) {
+    const scrubbed = scrubCredentials(text, 1e6);
+    assert.notEqual(scrubbed, text);
+    assert.match(scrubbed, /<REDACTED>|cot_…/);
+    for (const shape of WITHHELD_SHAPES) assert.ok(!shape.test(scrubbed), `scrubbed text still reads as ${shape}: ${scrubbed.slice(0, 40)}`);
+    // The generated program writes the same replacement.
+    assert.equal((await payloadOf(s, event("postToolUseRead", { tool_output: text }))).output, scrubCredentials(text, CONTENT));
+  }
 });
