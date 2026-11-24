@@ -33,21 +33,26 @@ expires after 24 hours. Existing import deduplication and resumability still app
 
 ## Cursor
 
-`npx -y @codetelemetry/connect login --client cursor` adds six entries to
+`npx -y @codetelemetry/connect login --client cursor` adds eight entries to
 `~/.cursor/hooks.json` (your other hooks are kept), installs a hook program and
 starts a background collector: a systemd user service on Linux, a LaunchAgent on
 macOS. Run it on the machine where the workspace lives; with Remote-SSH, WSL or a
 Dev Container, Cursor runs hooks on that host. Requires Node.js 24 or newer.
 Verified on Linux. macOS is in preview. Windows is not supported.
 
-A new install sends prompt text, tool commands, file paths, the workspace path and
-your Cursor account email, with prompt length, tool names, durations, exit codes,
-models and token counts. `--no-enrich` stops the prompt text, tool commands, file
-paths and workspace path; `--no-identity` stops the email. `--enrich` and
-`--identity` turn them back on, and a later `login` with neither flag keeps the
-stored choice. Text that looks like a credential is scrubbed on a best-effort
-basis; a secret in an unrecognized shape is sent as typed. Headless runs
-(`cursor-agent -p`) report tools and durations, but no prompts and no tokens.
+A new install sends prompt text, the reply and the model's reasoning for each
+turn, tool commands, tool output, the error text of a failed call, file paths, the
+content of files read and written, the workspace path and your Cursor account
+email, with prompt length, tool names, durations, exit codes, models and token
+counts. `--no-enrich` stops the prompt, reply and reasoning text, tool commands,
+tool output, error text, file paths, file content and workspace path;
+`--no-identity` stops the email. `--enrich` and `--identity` turn them back on,
+and a later `login` with neither flag keeps the stored choice. Text that looks
+like a credential is scrubbed on a best-effort basis; a secret in an unrecognized
+shape is sent as typed. Headless runs (`cursor-agent -p`) report tools, their
+output and durations, but no prompts, no replies and no tokens. After upgrading
+Connect, run `login --client cursor` again to install the current hook program
+and hook entries.
 
 `cursor status` shows collector, hook and delivery health. `cursor uninstall`
 removes the hooks, the hook program, the launchers and the service and lists every
