@@ -2121,7 +2121,7 @@ export const TOOLS: ToolDef[] = [
       "ALWAYS call it first with dryRun true (the default) and show the user the summary — sessions, tokens, what is skipped and the content setting — then ask before calling again with dryRun false. " +
       "Sessions already captured live or already imported are skipped; an interrupted import resumes. Each call sends at most maxSessions; while `remaining` > 0, call again. " +
       "A persistent workspace restricts imports to its bound project and coding client; it never falls back to a personal or machine-wide destination. " +
-      "Imported history has tokens, prompts and tool results but no per-request latency, retries, permission decisions or active time. " +
+      "Imported history has tokens, prompts and tool calls (name, outcome and, as content allows, input). " +
       "Imported tokens are billed like live usage (this month's included seat tokens first, then the per-million price from prepaid credit): when the server reports billing state, `billing` gives the run's estimated cost and whether the credit covers it, and a real import starts no session the credit cannot cover (stoppedBy budget). estimate_history prices the whole local history without a key. " +
       "Rows carry the signed-in account's identity as live rows do, shown masked in `identity`; identity false omits it. " +
       "content defaults to live: exactly the prompt / tool text the user's live exporters are configured to send (Claude OTEL_LOG_USER_PROMPTS / OTEL_LOG_TOOL_DETAILS, Codex log_user_prompt); none sends no text; all sends prompt text and tool inputs regardless — only with the user's explicit agreement.",

@@ -52,7 +52,7 @@ import {
 
 /** The @codetelemetry/connect release this source is published as. Keep it in
  *  step with packages/connect/package.json; a test fails when they differ. */
-export const CONNECT_VERSION = "0.6.0";
+export const CONNECT_VERSION = "0.6.1";
 
 type Parsed = { _: string[]; flags: Record<string, string | boolean> };
 
@@ -194,8 +194,8 @@ import options:
   (Codex) locally and sends them as telemetry through the normal ingest, tagged
   ingest.source=history-import. Sessions already captured live, or already
   imported, are skipped; an interrupted import resumes on the next run.
-  Imported history has tokens, prompts and tool results, but no per-request
-  latency, retries, permission decisions or active time.
+  Imported history has tokens, prompts and tool calls (name, outcome and, as
+  --content allows, input).
   Imported tokens are billed like live usage: they count toward this month's
   included seat tokens first, then 5¢ per million from prepaid credit. When the
   server reports billing state, an import starts no session the credit cannot

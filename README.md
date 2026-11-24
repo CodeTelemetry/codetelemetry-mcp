@@ -32,7 +32,7 @@ deterministic (see [Releases & discovery](#releases--discovery)):
 ```json
 {
   "mcpServers": {
-    "codetelemetry": { "command": "npx", "args": ["-y", "--package=@codetelemetry/mcp@0.10.0", "codetelemetry-mcp"] }
+    "codetelemetry": { "command": "npx", "args": ["-y", "--package=@codetelemetry/mcp@0.10.1", "codetelemetry-mcp"] }
   }
 }
 ```
@@ -46,7 +46,7 @@ sessions without local setup, or **Connect my coding tool** to record your own w
 Run the project connection command from the repository you choose:
 
 ```sh
-npx -y @codetelemetry/connect@0.6.0 join --organization-id tm_example --client codex --project .
+npx -y @codetelemetry/connect@0.6.1 join --organization-id tm_example --client codex --project .
 # For Claude Code, use --client claude.
 ```
 
@@ -68,9 +68,9 @@ verification. **My sessions** is scoped to your authenticated ingest ownership;
 Optional history import uses the saved project and credentials, without a key argument:
 
 ```sh
-npx -y @codetelemetry/connect@0.6.0 import --workspace <name> --preview
+npx -y @codetelemetry/connect@0.6.1 import --workspace <name> --preview
 # Choose numbers from that preview; no session content uploads until confirmation:
-npx -y @codetelemetry/connect@0.6.0 import --workspace <name> --select 1,2 --confirm
+npx -y @codetelemetry/connect@0.6.1 import --workspace <name> --select 1,2 --confirm
 ```
 
 Preview is local-only and defaults to the last 30 days. It keeps at most 100 session
@@ -474,10 +474,11 @@ dependencies and state directories. `.tf` / `.tf.json` selects Terraform;
 `Pulumi.yaml` / `Pulumi.yml` selects Pulumi. Mixed, missing or incomplete context
 requires `format: "terraform"` or `format: "pulumi"`, or a narrower directory.
 
-Terraform writes `codetelemetry-grader.tf.json`, for use with the local
-`codetelemetry_grader_config` provider resource. Configure the provider using
-[codetelemetry-providers](https://github.com/ElliotGardiner/codetelemetry-providers)
-before planning; it is not a published registry integration.
+Terraform writes `codetelemetry-grader.tf.json`, for use with the
+`codetelemetry_grader_config` resource of the
+[CodeTelemetry Terraform provider](https://registry.terraform.io/providers/CodeTelemetry/codetelemetry/latest)
+(source: [CodeTelemetry/terraform-provider-codetelemetry](https://github.com/CodeTelemetry/terraform-provider-codetelemetry)).
+Configure the provider before planning.
 Pulumi writes `codetelemetry-grader.pulumi.yaml` as JSON, a valid YAML subset.
 Move it to a **separate directory** as `Pulumi.yaml`, build the provider binary
 there at `./bin/terraform-provider-codetelemetry`, then run `pulumi install` and
