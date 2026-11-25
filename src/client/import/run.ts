@@ -54,6 +54,7 @@ export {
   type SkipCounts,
   type StopReason,
   type ImportRunBilling,
+  type ImportRunPartial,
 } from "./core.ts";
 export type { HistoryEstimate, HistoryEstimateSource, MonthBucket } from "./estimate.ts";
 
@@ -229,6 +230,7 @@ export async function runImport(opts: ImportRunOptions): Promise<ImportRunResult
       keyHash: hash,
       keyMasked: mask(key),
       statusUrl: endpoints.agentImportStatusUrl,
+      reportUrl: endpoints.agentImportReportUrl,
       ingestEndpoint: endpoints.ingestEndpoint,
       dryRun,
       run: randomUUID(),

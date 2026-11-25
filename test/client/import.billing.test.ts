@@ -82,6 +82,8 @@ test("a dry run prices the window and reports affordability without skipping", a
   assert.equal(r.billing?.estimatedTokens, all);
   assert.equal(r.billing?.estimatedCostUsd, all / 1e6);
   assert.equal(r.billing?.affordable, false);
+  assert.equal(r.partial?.requested.tokens, all);
+  assert.equal(r.partial?.fits.sessions, 2, "what a real run would send");
   assert.equal(r.stoppedBy, null);
   assert.equal(server.ingestCalls.length, 0);
 
@@ -91,39 +93,112 @@ test("a dry run prices the window and reports affordability without skipping", a
   assert.equal(covered.billing?.affordable, true);
 });
 
-test("a real import never starts a session the credit cannot cover, and resumes once credit is added", async () => {
+test("an import larger than the credit is partial: it sends what fits, succeeds, and reports the whole volume", async () => {
   const sessions = await fixtureSessions();
   const server = new FakeServer();
+  const all = sessions.reduce((n, s) => n + s.tokens, 0);
   const firstTwo = sessions[0].tokens + sessions[1].tokens;
   // Included allowance covers the first session; credit covers the second only.
   server.billing = { ...BILLING, tokenPriceUsdPerMillion: 1, includedTokensRemaining: sessions[0].tokens, creditUsd: sessions[1].tokens / 1e6 };
   const dirs = setup();
   const r = await runImport(opts(server, dirs));
-  assert.equal(r.ok, false);
+  assert.equal(r.ok, true, r.errors.join("; "));
+  assert.deepEqual(r.errors, []);
   assert.equal(r.stoppedBy, "budget");
   assert.equal(r.totals.sessions, 2, "the two oldest sessions fit");
   assert.equal(r.remaining, 1);
   assert.equal(r.sources.reduce((n, s) => n + (s.skipped.budget ?? 0), 0), 1);
   assert.equal(r.billing?.affordable, false);
-  // A cut run's billing prices what it sent, never the sessions it skipped.
+  // A partial run's billing prices what it sent; `partial` has the whole window.
   assert.equal(r.billing?.estimatedTokens, firstTwo);
   assert.equal(r.billing?.estimatedCostUsd, Math.round(sessions[1].tokens) / 1e6);
-  assert.ok(r.errors.some((e) => /Stopped before 1 session\(s\)/.test(e) && /prepaid credit/.test(e)), r.errors.join("; "));
-  assert.ok(r.errors.some((e) => /limited to the 2 oldest session\(s\) that fit/.test(e)), r.errors.join("; "));
-  assert.ok(!r.errors.some((e) => /HTTP 402/.test(e)), "no ingest refusal happened");
+  assert.deepEqual(r.partial, {
+    requested: { sessions: 3, tokens: all, costUsd: Math.round(all - sessions[0].tokens) / 1e6 },
+    fits: { sessions: 2, tokens: firstTwo, costUsd: sessions[1].tokens / 1e6 },
+  });
+  assert.ok(r.warnings.some((w) => /^Partial import: /.test(w) && /2 of 3 session\(s\) fit/.test(w)), r.warnings.join("; "));
   const last = sessions[2].sid;
   assert.equal(server.logs.filter((l) => l.sid === last).length, 0, "the unaffordable session sent nothing");
   assert.equal(server.logs.filter((l) => l.marker).length, 2);
-  const imported = r.sources.reduce((n, s) => n + s.tokens.input + s.tokens.output + s.tokens.cacheRead + s.tokens.cacheCreation, 0);
-  assert.equal(imported, firstTwo);
+
+  // The server was told the whole volume before anything was sent, and the sent volume after.
+  assert.deepEqual(server.reports.map((x) => x.phase), ["plan", "sent"]);
+  const [plan, done] = server.reports;
+  assert.deepEqual(plan.requested, { sessions: 3, tokens: all });
+  assert.deepEqual(plan.planned, { sessions: 2, tokens: firstTwo });
+  const bySource = Object.values(plan.requestedBySource) as Array<{ sessions: number; tokens: number }>;
+  assert.equal(bySource.reduce((n, v) => n + v.tokens, 0), all);
+  assert.deepEqual(done.sent, { sessions: 2, tokens: firstTwo });
+  assert.equal(done.done, true);
+  assert.equal(done.stoppedBy, "budget");
+  for (const s of sessions) assert.ok(!JSON.stringify(server.reports).includes(s.sid), "no session ids in a report");
 
   // Credit added: the same command finishes the window without resending.
   server.billing = { ...BILLING, creditUsd: 100 };
   const again = await runImport(opts(server, dirs));
   assert.equal(again.ok, true, again.errors.join("; "));
   assert.equal(again.totals.sessions, 1);
+  assert.equal("partial" in again, false);
   assert.equal(server.logs.filter((l) => l.marker).length, 3);
   assert.equal(again.billing?.estimatedTokens, sessions[2].tokens, "only the sessions this run sends are priced");
+});
+
+test("a session that does not fit is passed over, not a stop; nothing that fits is an error", async () => {
+  const sessions = await fixtureSessions();
+  const biggest = [...sessions].sort((a, b) => b.tokens - a.tokens)[0];
+  const others = sessions.filter((s) => s !== biggest);
+  const otherTokens = others.reduce((n, s) => n + s.tokens, 0);
+  assert.ok(otherTokens < biggest.tokens, "the fixture's biggest session outweighs the rest");
+  const server = new FakeServer();
+  server.billing = { ...BILLING, tokenPriceUsdPerMillion: 1, creditUsd: otherTokens / 1e6 };
+  const r = await runImport(opts(server, setup()));
+  assert.equal(r.ok, true, r.errors.join("; "));
+  assert.equal(r.totals.sessions, others.length);
+  assert.equal(server.logs.filter((l) => l.sid === biggest.sid).length, 0);
+  assert.deepEqual([...new Set(server.logs.filter((l) => l.marker).map((l) => l.sid))].sort(), others.map((s) => s.sid).sort());
+
+  const none = new FakeServer();
+  none.billing = { ...BILLING, tokenPriceUsdPerMillion: 1, creditUsd: 0 };
+  const refused = await runImport(opts(none, setup()));
+  assert.equal(refused.ok, false);
+  assert.equal(refused.stoppedBy, "budget");
+  assert.ok(refused.errors.some((e) => /^Nothing was sent: /.test(e)), refused.errors.join("; "));
+  assert.equal(none.ingestCalls.length, 0);
+  assert.equal(none.reports[0].planned.sessions, 0, "the volume it would have been is still reported");
+  assert.equal(none.reports[0].requested.sessions, 3);
+});
+
+test("a session cap defers sessions that fit before it calls the run out of credit", async () => {
+  const sessions = await fixtureSessions();
+  const server = new FakeServer();
+  server.billing = { ...BILLING, tokenPriceUsdPerMillion: 1, creditUsd: (sessions[0].tokens + sessions[1].tokens) / 1e6 };
+  const r = await runImport(opts(server, setup(), { maxSessions: 1 }));
+  assert.equal(r.totals.sessions, 1);
+  assert.equal(r.stoppedBy, null, "the next run needs no credit");
+  assert.equal(r.remaining, 2);
+  assert.equal(server.reports[0].planned.sessions, 1);
+  assert.equal(server.reports[0].requested.sessions, 3);
+});
+
+test("a report that fails, or a server without the route, never changes the import; a dry run reports nothing", async () => {
+  for (const status of [404, 429, 500]) {
+    const server = new FakeServer();
+    server.reportStatus = status;
+    const r = await runImport(opts(server, setup()));
+    assert.equal(r.ok, true, r.errors.join("; "));
+    assert.equal(r.totals.sessions, 3);
+    assert.equal(server.reports.length, 1, "no report id, no further reports");
+  }
+  const thrown = new FakeServer();
+  const inner = thrown.fetch;
+  thrown.fetch = async (url, init) => {
+    if (String(url).endsWith("/import-report")) throw new TypeError("fetch failed");
+    return inner(url, init);
+  };
+  assert.equal((await runImport(opts(thrown, setup()))).ok, true);
+  const dry = new FakeServer();
+  await runImport(opts(dry, setup(), { dryRun: true }));
+  assert.equal(dry.reports.length, 0);
 });
 
 test("an unlimited allowance or an absent billing block runs no budget check", async () => {

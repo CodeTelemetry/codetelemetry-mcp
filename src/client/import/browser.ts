@@ -233,6 +233,7 @@ export async function importFiles(files: UploadFile[], opts: BrowserImportOption
     keyHash,
     keyMasked: maskKey(key),
     statusUrl: `${opts.apiBase.replace(/\/$/, "")}/api/agent/import-status`,
+    reportUrl: `${opts.apiBase.replace(/\/$/, "")}/api/agent/import-report`,
     ingestEndpoint: opts.ingestEndpoint.replace(/\/$/, ""),
     dryRun: opts.dryRun,
     run: crypto.randomUUID(),

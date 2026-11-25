@@ -50,6 +50,7 @@ export type Endpoints = {
   agentReplyPhrasesUrl: string;
   /** Session-history import: which sessions are live / imported / resumable. */
   agentImportStatusUrl: string;
+  agentImportReportUrl: string;
   agentGraderUrl: string;
   agentGraderConfigureUrl: string;
   /** Optional for consumers constructing older endpoint sets; the resolver supplies it. */
@@ -97,6 +98,7 @@ export function resolveEndpoints(overrides: Partial<{ apiBase: string; ingestEnd
     agentGitHubGateConfigureUrl: `${apiBase}/api/agent/github-gate/configure`,
     agentReplyPhrasesUrl: `${apiBase}/api/agent/reply-phrases`,
     agentImportStatusUrl: `${apiBase}/api/agent/import-status`,
+    agentImportReportUrl: `${apiBase}/api/agent/import-report`,
     agentGraderUrl: `${apiBase}/api/agent/grader`,
     agentGraderConfigureUrl: `${apiBase}/api/agent/grader/configure`,
     agentGraderPublishUrl: `${apiBase}/api/agent/grader/publish`,

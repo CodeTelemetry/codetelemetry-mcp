@@ -21,6 +21,9 @@ export class FakeServer {
   live = new Set<string>();
   statusCalls: any[] = [];
   ingestCalls: Array<{ path: string; part: string }> = [];
+  /** import-report bodies, and how the route answers (null: an older server's 404). */
+  reports: any[] = [];
+  reportStatus: number | null = 200;
   statusFault: number | null = null;
   /** The import-status billing block (C1), returned as-is when set. */
   billing: unknown = undefined;
@@ -39,6 +42,11 @@ export class FakeServer {
         ok: true, sessions: body.sessions.map((s: any) => this.status(s)), settleMs: 300_000, nowMs: NOW,
         ...(this.billing !== undefined ? { billing: this.billing } : {}),
       });
+    }
+    if (u.origin === API && u.pathname === "/api/agent/import-report") {
+      this.reports.push(body);
+      if (this.reportStatus !== 200) return new Response(JSON.stringify({ error: "x" }), { status: this.reportStatus ?? 404 });
+      return Response.json(body.phase === "plan" ? { ok: true, reportId: "run#2026-10-10T12:00:00.000Z#0123456789abcdef" } : { ok: true });
     }
     assert.equal(u.origin, INGEST);
     const resource = flat((body.resourceLogs ?? body.resourceMetrics)[0].resource.attributes);

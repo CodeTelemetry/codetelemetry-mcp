@@ -14,6 +14,7 @@
 // token-metric parts may not, and are reported `uncertain` instead.
 
 import type { FetchLike } from "../otlp.ts";
+import type { ImportSource } from "./model.ts";
 
 export type PostOutcome =
   | { kind: "ok" }
@@ -237,4 +238,74 @@ export async function fetchStatus(opts: {
     }
   }
   return { kind: "unavailable", detail };
+}
+
+// ── Run report ───────────────────────────────────────────────────────────────
+// How much a real run found to import, how much of it it will send, and how
+// much it has sent. Counts only, so a partial import's full size is known to
+// the workspace's server. Best effort: a failure, or a server without the
+// route, never changes the run.
+
+export type ImportVolume = { sessions: number; tokens: number };
+
+export type ImportPlanReport = {
+  run: string;
+  tool: string;
+  importVersion: string;
+  sinceMs: number;
+  untilMs: number;
+  requested: ImportVolume;
+  requestedBySource: Partial<Record<ImportSource, ImportVolume>>;
+  planned: ImportVolume;
+};
+
+/** Progress is reported at most this often while a run sends. */
+export const REPORT_INTERVAL_MS = 30_000;
+const REPORT_TIMEOUT_MS = 5_000;
+
+export type ImportReporter = {
+  plan(report: ImportPlanReport): Promise<void>;
+  /** Cumulative volume sent so far; throttled unless `done`. */
+  sent(volume: ImportVolume, at: { done: boolean; stoppedBy: string | null }): Promise<void>;
+};
+
+export function makeImportReporter(o: {
+  url: string | undefined;
+  key: string;
+  fetchImpl: FetchLike;
+  clock: () => number;
+}): ImportReporter {
+  let reportId: string | null = null;
+  let lastAt = 0;
+  const post = async (body: unknown): Promise<Record<string, unknown> | null> => {
+    if (!o.url) return null;
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), REPORT_TIMEOUT_MS);
+    try {
+      const res = await o.fetchImpl(o.url, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${o.key}` },
+        body: JSON.stringify(body),
+        signal: ac.signal,
+      });
+      return res.status === 200 ? ((await res.json()) as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  return {
+    async plan(report) {
+      const answer = await post({ phase: "plan", ...report });
+      reportId = typeof answer?.reportId === "string" ? answer.reportId : null;
+      lastAt = o.clock();
+    },
+    async sent(volume, at) {
+      if (!reportId) return;
+      if (!at.done && o.clock() - lastAt < REPORT_INTERVAL_MS) return;
+      lastAt = o.clock();
+      await post({ phase: "sent", reportId, sent: volume, done: at.done, stoppedBy: at.stoppedBy });
+    },
+  };
 }
