@@ -830,6 +830,13 @@ never rewrite your own `~/.claude/settings.json` or Codex config. The collector
 tests also pass their own home directory, clock, fetch and service-manager runner,
 so none of them reaches `~/.cursor`, `systemctl` or `launchctl`.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). AI-assisted contributions are welcome
+when you disclose how you made them; the
+[contributor guide](https://codetelemetry.com/docs/open-source/ai-contributions)
+explains how.
+
 ## Client implementation ownership
 
 This public repository owns the local client implementation. `src/client` contains
