@@ -30,3 +30,14 @@ Use Node 24 and the committed npm lockfile. Validate client changes with typeche
 unit and protocol tests, packaged MCP tests, installed Connect/Kiro/Cursor smoke and
 the source/artifact audits. npm publication belongs to this repository's release
 workflow and remains a separate step from preparing a pull request.
+
+## Contributing with an AI agent
+
+- Follow the AI policy in [CONTRIBUTING.md](CONTRIBUTING.md). The contributor
+  guide it links to is
+  https://codetelemetry.com/docs/open-source/ai-contributions.
+- Do not open a pull request, push or comment without the user's approval.
+- Never add a Signed-off-by line. Only the human contributor may add theirs.
+- Help the user fill in the "AI assistance" section of the pull request.
+  Report only checks that were actually run, and say what was not verified.
+- Never publish a session without the user's explicit approval.
