@@ -32,7 +32,7 @@ deterministic (see [Releases & discovery](#releases--discovery)):
 ```json
 {
   "mcpServers": {
-    "codetelemetry": { "command": "npx", "args": ["-y", "--package=@codetelemetry/mcp@0.10.1", "codetelemetry-mcp"] }
+    "codetelemetry": { "command": "npx", "args": ["-y", "--package=@codetelemetry/mcp@0.11.0", "codetelemetry-mcp"] }
   }
 }
 ```
@@ -46,7 +46,7 @@ sessions without local setup, or **Connect my coding tool** to record your own w
 Run the project connection command from the repository you choose:
 
 ```sh
-npx -y @codetelemetry/connect@0.6.1 join --organization-id tm_example --client codex --project .
+npx -y @codetelemetry/connect@0.7.0 join --organization-id tm_example --client codex --project .
 # For Claude Code, use --client claude.
 ```
 
@@ -68,9 +68,9 @@ verification. **My sessions** is scoped to your authenticated ingest ownership;
 Optional history import uses the saved project and credentials, without a key argument:
 
 ```sh
-npx -y @codetelemetry/connect@0.6.1 import --workspace <name> --preview
+npx -y @codetelemetry/connect@0.7.0 import --workspace <name> --preview
 # Choose numbers from that preview; no session content uploads until confirmation:
-npx -y @codetelemetry/connect@0.6.1 import --workspace <name> --select 1,2 --confirm
+npx -y @codetelemetry/connect@0.7.0 import --workspace <name> --select 1,2 --confirm
 ```
 
 Preview is local-only and defaults to the last 30 days. It keeps at most 100 session
@@ -595,10 +595,16 @@ Imported tokens are billed like live usage: they count toward the current
 month, seat-included tokens first, then the per-million token price from
 prepaid credit. When the import-status read reports the workspace's billing
 state, `import --dry-run` shows the run's estimated cost and whether the credit
-covers it, and a real import never starts a session whose cumulative cost
-would exceed the included allowance plus credit: the rest are skipped as
-`budget` (`stoppedBy: "budget"`) and the same command continues once credit is
-added. Without billing state the import behaves as before.
+covers it. An import larger than the included allowance plus credit is a partial
+import: it sends the sessions that fit, oldest first, passing over any that do
+not, and leaves the rest as `budget` (`stoppedBy: "budget"`, with the whole
+window and the part that fits in `partial`). The same command continues once
+credit is added. Without billing state the import sends everything.
+
+Before it sends, a real import reports the number of sessions and tokens it
+found and the number it will send, and then how much it has sent, to
+`/api/agent/import-report` under the same key. A dry run and `estimate` report
+nothing, and a report that fails never changes the import.
 
 Imported rows carry the identity attributes the live exporters send, on every
 record: Claude Code's `organization.id`, `user.account_id`,

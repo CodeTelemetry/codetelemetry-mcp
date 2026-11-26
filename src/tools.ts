@@ -569,6 +569,8 @@ function importSummary(r: ImportRunResult): ToolResult {
     // Imported tokens are billed like live usage (included seat tokens first,
     // then prepaid credit); absent when the server reported no billing state.
     ...(r.billing ? { billing: r.billing } : {}),
+    // The whole window against the part the included tokens and credit cover.
+    ...(r.partial ? { partial: r.partial } : {}),
     ...(r.identity ? { identity: r.identity } : {}),
     sources: r.sources.map((s) => ({
       source: s.source,
@@ -591,9 +593,10 @@ function importSummary(r: ImportRunResult): ToolResult {
     note: r.dryRun
       ? "Nothing was sent. Show the user this summary, the content setting" + (r.billing ? ", the billing estimate" : "") +
         " and the identity stamped on the rows, and ask before importing (dryRun false)." +
-        (unaffordable ? " The prepaid credit does not cover every session: a real import stops before the first one it cannot pay for." : "")
+        (unaffordable ? " The prepaid credit does not cover every session: a real import sends only the ones that fit (see partial)." : "")
       : r.stoppedBy === "budget"
-        ? "Stopped for budget: add credit or seats, then call import_history again with the same arguments; finished sessions are skipped."
+        ? (r.partial && r.ok ? "Partial import: the sessions the included tokens and credit cover were sent; partial.requested is the whole import. For the rest, add credit " : "Stopped for budget: add credit ") +
+          "or seats, then call import_history again with the same arguments; finished sessions are skipped."
         : r.remaining > 0
         ? "More sessions remain: call import_history again with the same arguments to continue."
         : "Import finished for this window. Imported sessions show in the dashboards like live ones, without latency, decisions or active time.",
@@ -2122,7 +2125,7 @@ export const TOOLS: ToolDef[] = [
       "Sessions already captured live or already imported are skipped; an interrupted import resumes. Each call sends at most maxSessions; while `remaining` > 0, call again. " +
       "A persistent workspace restricts imports to its bound project and coding client; it never falls back to a personal or machine-wide destination. " +
       "Imported history has tokens, prompts and tool calls (name, outcome and, as content allows, input). " +
-      "Imported tokens are billed like live usage (this month's included seat tokens first, then the per-million price from prepaid credit): when the server reports billing state, `billing` gives the run's estimated cost and whether the credit covers it, and a real import starts no session the credit cannot cover (stoppedBy budget). estimate_history prices the whole local history without a key. " +
+      "Imported tokens are billed like live usage (this month's included seat tokens first, then the per-million price from prepaid credit): when the server reports billing state, `billing` gives the run's estimated cost and whether the credit covers it, and an import larger than that sends only the sessions that fit (`partial`, stoppedBy budget). A real import reports its session and token counts to the workspace. estimate_history prices the whole local history without a key. " +
       "Rows carry the signed-in account's identity as live rows do, shown masked in `identity`; identity false omits it. " +
       "content defaults to live: exactly the prompt / tool text the user's live exporters are configured to send (Claude OTEL_LOG_USER_PROMPTS / OTEL_LOG_TOOL_DETAILS, Codex log_user_prompt); none sends no text; all sends prompt text and tool inputs regardless — only with the user's explicit agreement.",
     inputSchema: obj({

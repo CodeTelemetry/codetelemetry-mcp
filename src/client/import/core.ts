@@ -22,7 +22,7 @@ import { CLAUDE_SERVICE, CODEX_SERVICE, completionMarker, convertSession } from 
 import { chunkForPost, toOtlpLogs, toOtlpMetrics } from "./otlpImport.ts";
 import type { JournalEvent, LedgerEntry } from "./ledger.ts";
 import { COMMIT_PART_LABEL, decide, logPartLabel, metricPartLabel, type Decision, type SessionStatus, type SkipReason } from "./protocol.ts";
-import { fetchStatus, makePacer, postOtlp, sleepMs, type ImportBilling, type StatusRequestSession } from "./transport.ts";
+import { fetchStatus, makeImportReporter, makePacer, postOtlp, sleepMs, type ImportBilling, type ImportVolume, type StatusRequestSession } from "./transport.ts";
 import type { FetchLike } from "../otlp.ts";
 
 /** Raw telemetry retention (clickhouse-tiering-runtime.sh DELETE_DAYS), keyed
@@ -91,6 +91,14 @@ export type ImportRunBilling = ImportBilling & {
   affordable: boolean;
 };
 
+/** A window larger than the included tokens plus credit: what the whole import
+ *  would have been, and the part that fits (what a real run sends, or on a dry
+ *  run would send, before any session cap). */
+export type ImportRunPartial = {
+  requested: ImportVolume & { costUsd: number };
+  fits: ImportVolume & { costUsd: number };
+};
+
 export type StopReason = "budget" | "auth" | "busy" | "time_limit" | "status_unavailable";
 
 export type ImportRunResult = {
@@ -105,11 +113,14 @@ export type ImportRunResult = {
   totals: { sessions: number; events: number; metricPoints: number };
   /** Eligible sessions not sent this run (session cap / deadline / stop). */
   remaining: number;
+  /** "budget" also ends a partial import (see `partial`), whose `ok` is true. */
   stoppedBy: StopReason | null;
   /** Billing top-up link when ingest refused for budget. */
   topup?: string | null;
   /** Present when the server reported billing state (absent: no budget check ran). */
   billing?: ImportRunBilling;
+  /** Present when the included tokens plus credit do not cover every eligible session. */
+  partial?: ImportRunPartial;
   /** Identity stamped on the imported rows, masked (emails e***@g***.com, ids shortened). */
   identity?: Partial<Record<ImportSource, Record<string, string>>>;
   /** Sessions holding an uncommitted import of a different plan: rows an
@@ -368,6 +379,8 @@ export type ImportPreparedOptions = PrepareOptions & {
   keyHash: string;
   keyMasked: string;
   statusUrl: string;
+  /** Where a real run reports its volumes; absent: it reports nothing. */
+  reportUrl?: string;
   ingestEndpoint: string;
   dryRun: boolean;
   run: string;
@@ -477,44 +490,71 @@ export async function importPrepared(prepared: Prepared[], o: ImportPreparedOpti
   }
 
   ready.sort((a, b) => a.p.startMs - b.p.startMs);
-  const cap = o.maxSessions && o.maxSessions > 0 ? o.maxSessions : Infinity;
-  const toSend = ready.slice(0, cap === Infinity ? undefined : cap);
-  const deferred = ready.length - toSend.length;
-  for (const r of ready.slice(toSend.length)) bump(summaries.get(r.p.source)!, "deferred");
 
   // Budget (ELL-655): imported tokens are billed like live usage: this
   // month's included seat tokens first, then the per-million price from
-  // prepaid credit. With the server's billing state, a real import never
-  // starts a session the workspace cannot pay for; a dry run reports it.
-  let runBilling: ImportRunBilling | undefined;
-  let budgetCut = 0;
+  // prepaid credit. With the server's billing state, a real import sends only
+  // the sessions the workspace can pay for: oldest first, passing over one that
+  // does not fit. A dry run reports the same split and skips nothing.
+  const requested = volumeOf(ready);
+  let affordable = ready;
+  let partial: ImportRunPartial | undefined;
   if (billing) {
     const priced = billing;
-    const cost = (tokens: number) => importCostUsd(tokens, priced);
     const credit = Math.max(0, priced.creditUsd);
-    let cumulative = 0;
-    let fits = toSend.length;
-    for (let i = 0; i < toSend.length; i++) {
-      cumulative += tokenTotal(toSend[i].p.tokens);
-      if (fits === toSend.length && cost(cumulative) > credit + 1e-9) fits = i;
+    let fitTokens = 0;
+    const fits: Ready[] = [];
+    const over: Ready[] = [];
+    for (const r of ready) {
+      const next = fitTokens + tokenTotal(r.p.tokens);
+      if (importCostUsd(next, priced) > credit + 1e-9) over.push(r);
+      else {
+        fits.push(r);
+        fitTokens = next;
+      }
     }
-    runBilling = { ...priced, estimatedTokens: cumulative, estimatedCostUsd: roundUsd(cost(cumulative)), affordable: fits === toSend.length };
-    if (!dryRun && fits < toSend.length) {
-      const over = toSend.splice(fits);
-      budgetCut = over.length;
-      for (const r of over) bump(summaries.get(r.p.source)!, "budget");
-      const fitTokens = toSend.reduce((n, r) => n + tokenTotal(r.p.tokens), 0);
-      // The run's billing covers what it sends, not the sessions it skipped:
-      // the whole window's cost is in the error below.
-      runBilling = { ...runBilling, estimatedTokens: fitTokens, estimatedCostUsd: roundUsd(cost(fitTokens)) };
-      errors.push(
-        `Stopped before ${budgetCut} session(s): importing every eligible session would cost about ` +
-          `${usd(cost(cumulative))} (${cumulative} tokens at ${usd(priced.tokenPriceUsdPerMillion)} per million, after ` +
-          `${Math.floor(priced.includedTokensRemaining)} included seat tokens left this month), more than the ${usd(credit)} prepaid credit. ` +
-          (toSend.length ? `This run was limited to the ${toSend.length} oldest session(s) that fit (${fitTokens} tokens). ` : "Nothing was sent. ") +
-          "Add credit or seats, then re-run the same command; finished sessions are skipped.",
-      );
+    if (over.length) {
+      partial = {
+        requested: { ...requested, costUsd: roundUsd(importCostUsd(requested.tokens, priced)) },
+        fits: { sessions: fits.length, tokens: fitTokens, costUsd: roundUsd(importCostUsd(fitTokens, priced)) },
+      };
+      if (!dryRun) {
+        affordable = fits;
+        for (const r of over) bump(summaries.get(r.p.source)!, "budget");
+        const what =
+          `importing every eligible session would cost about ${usd(partial.requested.costUsd)} (${requested.tokens} tokens at ` +
+          `${usd(priced.tokenPriceUsdPerMillion)} per million, after ${Math.floor(priced.includedTokensRemaining)} included seat tokens ` +
+          `left this month), more than the ${usd(credit)} prepaid credit. `;
+        const next = "Add credit or seats, then re-run the same command; finished sessions are skipped.";
+        if (fits.length) warnings.push(`Partial import: ${what}${fits.length} of ${ready.length} session(s) fit (${fitTokens} tokens); ${over.length} left for a later run. ${next}`);
+        else errors.push(`Nothing was sent: ${what}No session fits. ${next}`);
+      }
     }
+  }
+  const budgetCut = ready.length - affordable.length;
+  const cap = o.maxSessions && o.maxSessions > 0 ? o.maxSessions : Infinity;
+  const toSend = affordable.slice(0, cap === Infinity ? undefined : cap);
+  const deferred = affordable.length - toSend.length;
+  for (const r of affordable.slice(toSend.length)) bump(summaries.get(r.p.source)!, "deferred");
+  const planned = volumeOf(toSend);
+  // The run's billing covers what it sends, not the sessions it left out.
+  const runBilling: ImportRunBilling | undefined = billing
+    ? { ...billing, estimatedTokens: planned.tokens, estimatedCostUsd: roundUsd(importCostUsd(planned.tokens, billing)), affordable: !partial }
+    : undefined;
+
+  // A real run reports its volumes to the server, so a partial import's full
+  // size is not lost. Best effort; counts only.
+  const report = makeImportReporter({ url: dryRun ? undefined : o.reportUrl, key, fetchImpl, clock });
+  if (!dryRun && !stoppedBy && ready.length) {
+    const requestedBySource: Partial<Record<ImportSource, ImportVolume>> = {};
+    for (const source of summaries.keys()) {
+      const items = ready.filter((r) => r.p.source === source);
+      if (items.length) requestedBySource[source] = volumeOf(items);
+    }
+    await report.plan({
+      run: o.run, tool: o.importTool, importVersion: IMPORT_VERSION, sinceMs: o.sinceMs, untilMs: o.untilMs,
+      requested, requestedBySource, planned,
+    });
   }
 
   // 3. Send (or, on a dry run, count what would be sent).
@@ -522,6 +562,7 @@ export async function importPrepared(prepared: Prepared[], o: ImportPreparedOpti
   let topup: string | null | undefined;
   let refusedForBudget = false;
   let sent = 0;
+  let sentTokens = 0;
   let processed = 0;
   for (let i = 0; i < toSend.length; i++) {
     const { p, decision } = toSend[i];
@@ -635,6 +676,8 @@ export async function importPrepared(prepared: Prepared[], o: ImportPreparedOpti
         if (decision.resumed) s.resumed++;
         tally();
         sent++;
+        sentTokens += tokenTotal(p.tokens);
+        await report.sent({ sessions: sent, tokens: sentTokens }, { done: false, stoppedBy: null });
         if (sent % 10 === 0) log(`…${sent}/${toSend.length} sessions imported`);
       } else if (!stopOn(outcome)) {
         fail("the completion marker was refused; the session will resume on the next run");
@@ -646,7 +689,9 @@ export async function importPrepared(prepared: Prepared[], o: ImportPreparedOpti
     }
   }
   const remaining = deferred + budgetCut + (toSend.length - processed);
-  if (budgetCut > 0 && !stoppedBy) stoppedBy = "budget";
+  // Sessions a cap deferred still fit: the next run continues before any credit is needed.
+  if (budgetCut > 0 && deferred === 0 && !stoppedBy) stoppedBy = "budget";
+  await report.sent({ sessions: sent, tokens: sentTokens }, { done: true, stoppedBy });
 
   if (refusedForBudget) {
     errors.push(
@@ -665,7 +710,8 @@ export async function importPrepared(prepared: Prepared[], o: ImportPreparedOpti
 
   const sources = [...summaries.values()];
   return {
-    ok: errors.length === 0 && stoppedBy === null,
+    // A partial import that sent what fits did what it could: not a failure.
+    ok: errors.length === 0 && (stoppedBy === null || (stoppedBy === "budget" && budgetCut > 0 && !refusedForBudget)),
     run: o.run,
     dryRun,
     key: { masked: o.keyMasked, keyHash: hash },
@@ -681,6 +727,7 @@ export async function importPrepared(prepared: Prepared[], o: ImportPreparedOpti
     stoppedBy,
     ...(topup !== undefined ? { topup } : {}),
     ...(runBilling ? { billing: runBilling } : {}),
+    ...(partial ? { partial } : {}),
     ...maskedIdentity(sources.map((x) => x.source), o.identity, o.email),
     cleanup,
     warnings,
@@ -689,6 +736,9 @@ export async function importPrepared(prepared: Prepared[], o: ImportPreparedOpti
 }
 
 const tokenTotal = (t: ImportSourceSummary["tokens"]): number => t.input + t.output + t.cacheRead + t.cacheCreation;
+
+const volumeOf = (items: ReadonlyArray<{ p: Prepared }>): ImportVolume =>
+  ({ sessions: items.length, tokens: items.reduce((n, r) => n + tokenTotal(r.p.tokens), 0) });
 
 /** Sub-micro-dollar float noise removed. */
 export const roundUsd = (amount: number): number => Math.round(amount * 1e6) / 1e6;

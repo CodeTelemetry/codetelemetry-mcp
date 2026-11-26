@@ -52,7 +52,7 @@ import {
 
 /** The @codetelemetry/connect release this source is published as. Keep it in
  *  step with packages/connect/package.json; a test fails when they differ. */
-export const CONNECT_VERSION = "0.6.1";
+export const CONNECT_VERSION = "0.7.0";
 
 type Parsed = { _: string[]; flags: Record<string, string | boolean> };
 
@@ -198,8 +198,10 @@ import options:
   --content allows, input).
   Imported tokens are billed like live usage: they count toward this month's
   included seat tokens first, then 5¢ per million from prepaid credit. When the
-  server reports billing state, an import starts no session the credit cannot
-  cover (--dry-run reports whether the whole window is affordable).
+  server reports billing state, an import larger than that sends only the
+  sessions that fit, oldest first, and leaves the rest for a later run
+  (--dry-run reports how many fit). A real import reports its session and token
+  counts to the workspace, including what it left out.
   --dry-run              Parse, check and summarize; send nothing
   --source claude-code|codex|all   Which history to read (default: all; --client
                          claude|codex narrows it too). pi is refused: it keeps
@@ -466,8 +468,13 @@ function billingLines(result: ImportRunResult): string[] {
       `${perMillionLabel(b.tokenPriceUsdPerMillion)} per million, after ${fmtInt(b.includedTokensRemaining)} included seat tokens left this month.`,
     `  prepaid credit ${fmtUsd(Math.max(0, b.creditUsd))}: ` +
       (b.affordable ? "affordable" : result.dryRun
-        ? "NOT affordable; a real import stops before the first session the credit cannot cover"
-        : "not enough for every session; the rest were skipped (add credit, then re-run)"),
+        ? "not enough for every session; a real import sends only what fits"
+        : "not enough for every session; only what fits was sent (add credit, then re-run)"),
+    ...(result.partial
+      ? [`  whole window: ${fmtInt(result.partial.requested.sessions)} session(s), ${fmtInt(result.partial.requested.tokens)} tokens, about ` +
+          `${fmtUsd(result.partial.requested.costUsd)}; fits: ${fmtInt(result.partial.fits.sessions)} session(s), ${fmtInt(result.partial.fits.tokens)} tokens, ` +
+          `about ${fmtUsd(result.partial.fits.costUsd)}`]
+      : []),
   ];
 }
 
